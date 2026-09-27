@@ -1,0 +1,141 @@
+# Wechaty 微信自动化机器人（Windows 11 · puppet-xp + 本地 Ollama）
+
+一个跑在本机 Windows 上的微信机器人：**自动回复私聊/群聊（支持多条连发）、拉进群即用、定时主动发起话题**，AI 大脑使用本地 Ollama（无需任何 API Key、不联网传聊天内容）。
+
+## 回复形式
+
+- **多条连发**：AI 可以像真人一样把一条回复拆成多条气泡连发（条间 400-700ms 随机延迟）；AI 回复里用 `|||` 分隔即分条，换行也会拆条（最多 3 条，超出部分合并）
+- **emoji**：AI 可以在文字中使用 unicode emoji 字符
+- **GIF 表情包**：❌ **实验失败（BLOCKED）**。已实现注入代理层的 sendImageMsg（镜像 wxhelper 的调用形态），但原生调用 `kSendImageMsg(0x2383560)` 会异步导致微信崩溃（已试 3 种参数形态：立即释放/不释放/完整 WeChatString 结构体）。基础设施保留（sidecar.sendPicMsg、puppet.messageSendFile、scripts/test-sticker.mjs），后续可继续逆向。`scripts/probe-offsets.mjs` 可反汇编验证任意 offset。
+
+## 一、运行前提（已完成的部分）
+
+| 组件 | 状态 | 位置 |
+|---|---|---|
+| Node.js 18（便携版） | ✅ 已装 | `E:\wechaty-bot\runtime\node18\` |
+| npm 依赖（wechaty + puppet-xp + node-cron） | ✅ 已装 | `E:\wechaty-bot\node_modules\` |
+| Ollama + gpt-oss:20b 模型 | ✅ 已装 | `E:\Ollama`，模型在 `E:\OllamaModels` |
+| 微信 3.9.10.27 | ⬜ 需要安装 | 安装包在 `E:\wechaty-bot\downloads\` |
+
+> **为什么必须用微信 3.9.10.27？** 免费本地方案 wechaty-puppet-xp 通过 Frida 注入微信桌面客户端实现，只适配特定版本。当前版本对应关系：puppet-xp 2.1.1 ↔ 微信 3.9.10.27。**请勿让微信自动升级**（登录后进入 设置→关于微信 关闭自动更新；升级后机器人会失效）。
+
+## 二、首次启动步骤
+
+1. **安装微信 3.9.10.27**
+   - 双击 `downloads\WeChatSetup-3.9.10.27.exe`
+   - 安装界面把路径改到 **E 盘**（如 `E:\Apps\WeChat`），别装 C 盘
+   - 登录后：设置 → 关于微信 → 关闭"有更新时自动升级"
+   - （可选）设置 → 文件管理 → 把存储位置改到 E 盘
+2. **火绒添加信任区**（重要，否则注入会被拦截）
+   - 打开火绒 → 病毒查杀 → 信任区
+   - 添加目录：`E:\wechaty-bot`（整个目录）和微信安装目录（如 `E:\Apps\WeChat`）
+3. **确认 Ollama 在运行**
+   - 开始菜单启动 Ollama（或已开机自启）
+   - 验证：浏览器打开 `http://127.0.0.1:11434` 应显示 `Ollama is running`
+4. **启动机器人**
+   - 双击 `start.bat`（推荐）
+   - 或 PowerShell：`.\start.ps1`
+   - 看到 `机器人已启动` 且日志出现注入成功信息即就绪（无需扫码，用微信客户端里已登录的账号）
+
+## 三、日常使用
+
+### 自动回复
+- **私聊**：任何好友私聊机器人账号，AI 自动回复（冷却 4 秒/人，防刷屏）
+- **群聊**：把机器人账号拉进群即可。默认只有 **@它** 或消息里出现 **"小助手"** 才回复，回复会 @ 说话人
+- **新人进群**：自动发欢迎语（需在 config.json 的 rooms 里登记该群）
+
+### 多人格切换（人人可玩）
+- **预置角色**：鹅王（默认）/ 喵酱（猫娘）/ 卷卷（高冷学霸），角色文案在 config.json 的 `personas` 里可随意改
+- **命令**（群聊 @机器人，私聊直接说）：
+  - `人设列表` —— 看有哪些角色、当前是谁
+  - `变成喵酱` / `切换人设 卷卷` —— 切换（**每个群独立生效**，A 群换了不影响 B 群）
+  - `恢复默认` —— 切回鹅王
+- 切换只换"性格"，记忆、看图、连发、反击等能力全员共享
+- 运行状态存 `state/personas.json`，重启不丢
+
+### 长期记忆（模型无关）
+- **私聊**：AI 自动从对话中提取稳定信息（名字、年龄、喜好、宠物、计划等），存到 `memories/private/<wxid>.json`
+- **群聊**：每个群成员一份档案 `memories/rooms/<群ID>/<成员wxid>.json`（群改名不影响）
+- 注入：每次回复前，最近的记忆要点会自动拼进 AI 的上下文——**换任何模型读的都是同一份记忆**
+- 管理命令：发"**我的记忆**"查看存了什么；发"**忘记我**"清空自己的记忆（群聊里 @机器人 说）
+- 记忆文件在 `.gitignore` 中，**永远不会上传 GitHub**
+- 开关：config.json 的 `"memory": {"enabled": true, "maxFacts": 15}`
+
+### 主动发起话题
+`config.json` 的 `proactive` 数组控制，cron 表达式（本机时区）：
+
+```json
+{ "roomTopic": "测试群", "cron": "0 9 * * *", "type": "topic", "prompt": "……" }
+```
+
+上例 = 每天 9:00 向"测试群"发一个 AI 生成的话题。改完 config.json **重启机器人**生效。
+手动测试：把 cron 临时改成 `*/2 * * * *`（每 2 分钟）看效果。
+
+### 关键词
+- 发送 `ding` → 回复 `dong`（连通性自测）
+- 发送 `菜单` → 回复功能说明
+
+## 四、配置说明（config.json）
+
+| 字段 | 作用 |
+|---|---|
+| `ai.model` | Ollama 模型名。中文对话建议 `ollama pull qwen2.5:7b` 后改成 `qwen2.5:7b`（比 gpt-oss 更适合中文闲聊、速度更快） |
+| `ai.temperature` | 回复随机性，越高越"活泼" |
+| `persona` | 机器人人设（名字、性格、回复风格都在这里改） |
+| `private.whitelist` | 私聊白名单，空数组 = 对所有人生效；填微信备注名/昵称则只回复这些人 |
+| `rooms[].topic` | 群名（必须和微信里显示的群名**完全一致**） |
+| `rooms[].mode` | `mention`=被@/唤醒词才回；`all`=每条都回（慎用） |
+| `rooms[].wakeWords` | 唤醒词列表 |
+| `proactive` | 定时主动话题/问候，cron 语法：`分 时 日 月 周` |
+| `welcome.template` | 欢迎语模板，`{新人}` 会替换成新人昵称 |
+| `private.cooldownSeconds` / `rooms[].cooldownSeconds` | 同一会话两次回复的最小间隔 |
+
+日志在 `logs\` 目录（UTF-8，按天分文件）。
+
+## 五、常见问题
+
+- **推荐用守护模式启动**：双击 `start-supervisor.bat`（窗口可最小化，每 30 秒体检机器人，进程意外退出会自动拉起，日志见 `logs\supervisor.log`）。停止机器人：先关守护窗口，再结束 node 进程
+- **启动后微信崩溃/闪退** → 检查微信版本是否正好 3.9.10.27；火绒是否加了信任区
+- **机器人不动、无回复** → 先发 `ding` 测通路；再看 `logs\` 最新日志；确认群名和 config 完全一致（包括表情、空格）
+- **回复很慢** → 已换用 qwen3-abliterated:8b（基本进显存，数秒回复）；如改回 gpt-oss:20b 首次加载要 1-2 分钟
+- **AI 回复为空/报 Ollama 错误** → 确认 Ollama 在运行：`ollama list` 应能看到配置的模型
+- **想换回新版微信** → 直接升级即可，但机器人会失效；想再启用需装回 3.9.10.27
+- **PowerShell 提示执行策略** → 用 `powershell -ExecutionPolicy Bypass -File .\start.ps1` 或直接双击 `start.bat`
+
+## 六、风险与合规提示
+
+- Frida 注入属于非官方接入方式，**存在被微信限制账号的风险**。建议：用小号运行、控制回复频率（已内置冷却与每日上限）、不要用于营销群发
+- 请遵守微信软件许可及服务协议，勿将机器人用于骚扰、诈骗、垃圾营销等场景
+- 聊天数据全部留在本机（Ollama 本地推理），机器人不会把聊天内容发往任何第三方
+
+## 七、技术架构
+
+```
+微信 3.9.10.27 (Windows)
+   ↑ Frida 注入（wechaty-puppet-xp / sidecar）
+Wechaty 事件层（src/index.js：login/message/room-join/error）
+   ├─ 私聊处理  src/handlers/private.js（白名单+限流+AI）
+   ├─ 群聊处理  src/handlers/room.js（@检测+唤醒词+欢迎新人）
+   ├─ 定时任务  src/scheduler.js（node-cron → 主动话题）
+   └─ 限流      src/rate-limit.js（会话冷却+每日上限）
+AI 大脑        src/ai.js（Ollama /api/chat，带会话记忆，UTF-8）
+```
+
+启动方式：`start.bat`（cmd）/ `start.ps1`（PowerShell），均已处理 Windows 控制台中文编码（UTF-8）。
+
+## 版本管理（git + GitHub）
+
+- 仓库：`github.com/wwb45703-creator/wechaty-bot`（私有）
+- 每次添加功能后：`git add -A && git commit -m "feat: 功能备注"`；推送用 `node scripts/git-api-push.mjs "备注"`（走 GitHub API，绕开 github.com 直连阻断；本地 git push 在网络恢复时也可用）
+- `memories/`（好友记忆）、`logs/`、`runtime/`、`prebuilds/` 均不入库
+
+## 八、备份与补丁
+
+- **v1 稳定版备份**：`E:\wechaty-bot-backups\v1-stable-2026-09-27\`（含源码、config、已打补丁的 puppet-xp.js、PATCHES.md 补丁清单）。出问题把备份内容复制回 `E:\wechaty-bot` 即回滚。
+- **node_modules 里的 4 个补丁**（重装依赖后会丢失，需按 PATCHES.md 重打）：
+  1. 私聊消息 XML 空值保护（onHookRecvMsg case 1）
+  2. appmsg 类型解析空值保护（case 49）
+  3. 群消息参数映射修复（发送者/群ID 位置对齐本机注入代理）
+  4. 群名从 roomList 取值修复（所有群 topic 不再为空）
+  5. messageSendFile 打通 sendPicMsg（实验性，GIF 功能 BLOCKED 但链路保留）
+- **agent 脚本补丁**（dist/esm/src/init-agent-script.js，运行时按该文件注入）：sendImageMsg 函数 + writeFullWStringPtr（40 字节 WeChatString）+ probeOffsets/disasmFunc 诊断工具。
