@@ -1,0 +1,13 @@
+node_modules/
+logs/
+downloads/
+runtime/
+prebuilds/
+.mimosa/
+memories/
+state/
+stickers/
+config.json
+*.memory.json
+*.memory/
+.DS_Store
