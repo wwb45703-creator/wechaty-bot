@@ -19,7 +19,7 @@ export async function handlePrivateMessage(msg) {
   const alias = (await talker.alias().catch(() => null)) || ''
 
   // 白名单为空 = 对所有人生效
-  const whitelist = config.private.whitelist || []
+  const whitelist = config.private?.whitelist || []
   if (whitelist.length > 0) {
     const hit = whitelist.some((w) => w === name || w === alias)
     if (!hit) {
@@ -29,7 +29,7 @@ export async function handlePrivateMessage(msg) {
   }
 
   const key = `private:${talker.id}`
-  const limit = checkRate(key, config.private.cooldownSeconds ?? 30, config.private.dailyLimit ?? 200)
+  const limit = checkRate(key, config.private?.cooldownSeconds ?? 30, config.private?.dailyLimit ?? 200)
   if (!limit.allowed) {
     if (limit.reason === 'cooldown') {
       logger.info(`私聊冷却中（剩余 ${limit.remainingSeconds}s）: ${name}`)
@@ -46,8 +46,8 @@ export async function handlePrivateMessage(msg) {
     return
   }
 
-  if (config.menu.enabled && text === config.menu.keyword) {
-    await msg.say(config.menu.content)
+  if (config.menu?.enabled && text === config.menu?.keyword) {
+    await msg.say(config.menu?.content)
     recordReply(key, 0)
     return
   }
@@ -99,8 +99,8 @@ export async function handlePrivateMessage(msg) {
   })
   if (reply) {
     const bubbles = splitBubbles(reply)
-    await sendBubbles((t) => msg.say(t), bubbles, config.ai.replyDelaySeconds)
-    recordReply(key, config.private.dailyLimit ?? 200)
+    await sendBubbles((t) => msg.say(t), bubbles, config.ai?.replyDelaySeconds)
+    recordReply(key, config.private?.dailyLimit ?? 200)
     // 回复完成后，后台提取长期记忆（不阻塞回复）
     if (isMemoryEnabled()) {
       setImmediate(() => {
@@ -109,10 +109,10 @@ export async function handlePrivateMessage(msg) {
             const added = appendFacts(memRef, facts, alias || name)
             if (added) logger.info(`长期记忆 +${added}（私聊 ${alias || name}）`)
           }
-        })
+        }).catch((e) => logger.warn(`记忆提取/写盘失败（私聊）: ${e?.message || e}`))
       })
     }
   } else {
-    await msg.say(config.ai.fallbackReply).catch(() => {})
+    await msg.say(config.ai?.fallbackReply).catch(() => {})
   }
 }

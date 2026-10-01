@@ -53,11 +53,19 @@ function loadMemory(ref, displayName = '') {
 
 function saveMemory(ref, data) {
   const file = fileFor(ref)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  data.updatedAt = new Date().toISOString()
-  const tmp = file + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8') // 临时文件+替换，防写坏
-  fs.renameSync(tmp, file)
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    data.updatedAt = new Date().toISOString()
+    const tmp = file + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8') // 临时文件+替换，防写坏
+    fs.renameSync(tmp, file)
+    return true
+  } catch (err) {
+    // 写盘失败（磁盘满/杀软占用 tmp 等）不能让调用方的后台链路崩掉进程
+    try { fs.unlinkSync(file + '.tmp') } catch { /* 忽略 */ }
+    console.error(`[memory] 写入失败 ${file}: ${err.message}`)
+    return false
+  }
 }
 
 /** 追加长期记忆要点（归一化去重；超上限淘汰最旧），返回实际新增条数 */

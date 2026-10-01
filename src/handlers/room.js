@@ -37,8 +37,8 @@ export async function handleRoomMessage(msg, room) {
     await room.say(`@${name} dong`, talker)
     return
   }
-  if (config.menu.enabled && text === config.menu.keyword) {
-    await room.say(`@${name}\n${config.menu.content}`, talker)
+  if (config.menu?.enabled && text === config.menu?.keyword) {
+    await room.say(`@${name}\n${config.menu?.content}`, talker)
     return
   }
 
@@ -140,7 +140,7 @@ export async function handleRoomMessage(msg, room) {
       const clean = stripAtMentions(t, [name, selfName].filter(Boolean))
       if (i === 0) await room.say(`@${name} ${clean}`, talker)
       else await room.say(clean)
-    }, bubbles, config.ai.replyDelaySeconds)
+    }, bubbles, config.ai?.replyDelaySeconds)
     recordReply(key, config.roomDailyLimit ?? 500)
     if (isMemoryEnabled()) {
       setImmediate(() => {
@@ -149,11 +149,11 @@ export async function handleRoomMessage(msg, room) {
             const added = appendFacts(memRef, facts, name)
             if (added) logger.info(`长期记忆 +${added}（群[${topic}] ${name}）`)
           }
-        })
+        }).catch((e) => logger.warn(`记忆提取/写盘失败（群[${topic}]）: ${e?.message || e}`))
       })
     }
   } else {
-    await room.say(`@${name} ${config.ai.fallbackReply}`, talker).catch(() => {})
+    await room.say(`@${name} ${config.ai?.fallbackReply}`, talker).catch(() => {})
   }
 }
 
@@ -164,7 +164,7 @@ export async function handleRoomJoin(room, invitees) {
   const rc = topic ? findRoomConfig(topic) : undefined
   if (!rc) return // 只在 config.rooms 里登记过的群欢迎
   const names = invitees.map((c) => c.name()).join('、')
-  const line = (config.welcome.template || '欢迎 {新人} 加入！').replace('{新人}', names)
+  const line = (config.welcome?.template || '欢迎 {新人} 加入！').replace('{新人}', names)
   await room.say(line).catch((e) => logger.error(`欢迎语发送失败: ${e.message}`))
   logger.info(`群[${topic}] 新成员 ${names} 进群，已发送欢迎语`)
 }

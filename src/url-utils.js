@@ -4,7 +4,7 @@
  * 安全约定（必须维持）：
  *  - 仅允许 http/https 协议
  *  - 拒绝 localhost / 环回 / 私有 / 保留地址（含 DNS 解析后的 IP，防内网探测）
- *  - 重定向逐跳校验（最多 3 跳）
+ *  - 重定向逐跳校验（最多 4 跳）
  *  - 响应体流式读取、超过 maxBytes 截断（防超大文件拖垮内存）
  */
 
@@ -125,8 +125,9 @@ export async function fetchPageText(urlStr, opts) {
   if (!v.ok) return { ok: false, error: v.error }
   let current = v.url.href
 
-  // 逐跳跟随重定向（每跳都重新校验目标，最多 3 跳）
+  // 逐跳跟随重定向（每跳都重新校验目标，最多 4 跳）
   let response = null
+  let redirectExhausted = false
   for (let hop = 0; hop < 4; hop++) {
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), timeoutMs)
@@ -157,6 +158,9 @@ export async function fetchPageText(urlStr, opts) {
   }
 
   if (!response) return { ok: false, error: '链接无法访问' }
+  if (response.status >= 300 && response.status < 400) {
+    return { ok: false, error: '重定向次数过多' }
+  }
   if (response.status >= 400) {
     return { ok: false, error: '链接返回了错误状态 ' + response.status + '（页面可能已删除或需要登录）' }
   }

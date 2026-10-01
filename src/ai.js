@@ -20,6 +20,7 @@ export function initAi(config) {
 
 /** 每个会话（私聊联系人 / 群）各自维护的对话记忆 */
 const conversations = new Map()
+const chatQueues = new Map() // 每会话串行队列：防并发消息交错写坏对话历史
 
 function trimHistory(key) {
   const list = conversations.get(key) || []
@@ -109,7 +110,18 @@ function isRuleEcho(reply, system) {
  * @param {string} [p.memoryText]  长期记忆文本块（来自 memory.formatForPrompt）
  * @param {string} [p.personaName] 角色卡名（config.personas 的键；缺省用默认角色）
  */
-export async function chat({ key, userText, systemExtra = '', memoryText = '', personaName = '' }) {
+export async function chat(p) {
+  const { key } = p
+  // 串行化同一会话的并发调用（微信消息事件不排队，防交错污染历史）
+  const prev = chatQueues.get(key) || Promise.resolve()
+  const job = prev.catch(() => {}).then(() => doChat(p))
+  chatQueues.set(key, job.catch(() => {}))
+  // 清理一次性 key（如 link-once:<ts>）防 Map 无限增长；仅当仍是队尾时删除
+  job.finally(() => { if (chatQueues.get(key) === job) chatQueues.delete(key) })
+  return job
+}
+
+async function doChat({ key, userText, systemExtra = '', memoryText = '', personaName = '' }) {
   if (!conversations.has(key)) conversations.set(key, [])
   const history = conversations.get(key)
   history.push({ role: 'user', content: userText })

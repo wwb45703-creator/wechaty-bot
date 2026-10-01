@@ -8,7 +8,11 @@ import { generateOnce } from './ai.js'
  * 向指定群发送 AI 生成的话题（或固定问候语）。
  * node-cron 默认使用本机时区。
  */
+let schedulerReady = false
+
 export function initScheduler(bot) {
+  if (schedulerReady) return // 幂等：微信重登录不重复注册 cron（否则主动话题翻倍发送）
+  schedulerReady = true
   const jobs = config.proactive || []
   if (jobs.length === 0) {
     logger.info('未配置任何主动话题任务（config.proactive 为空）')

@@ -20,11 +20,12 @@ function linksConf() {
   return config.links || {}
 }
 
-/** 该群是否开启链接自动识别 */
+/** 该群是否开启链接自动识别（私聊 roomTopic 为 null，恒启用） */
 export function isLinkEnabledFor(roomTopic) {
   const lc = linksConf()
   if (lc.enabled === false) return false
-  // 群聊只对 config.rooms 登记过的群生效（私聊不受此限）
+  if (!roomTopic) return true // 私聊直接启用
+  // 群聊只对 config.rooms 登记过的群生效
   return (config.rooms || []).some((r) => r.topic === roomTopic)
 }
 
