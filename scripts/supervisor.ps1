@@ -43,19 +43,31 @@ if (-not $mutex.WaitOne(0)) {
     exit
 }
 
+# Start a process with zero window flash: .NET ProcessStartInfo + CreateNoWindow.
+# stdout/stderr are discarded (the bot writes its own per-day log files via logger.js;
+# ollama output is diagnostic only). Returns the PID or 0.
+function Start-HiddenProcess([string]$exe, [string]$argList, [string]$workDir) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $argList
+    $psi.WorkingDirectory = $workDir
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    return $proc
+}
+
 function Start-Guarded {
     # guard the wechaty bot
     $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and ($_.CommandLine -like '*src/index.js*' -or $_.CommandLine -like '*src\index.js*') })
     if ($procs.Count -eq 0) {
         Log "bot not running, starting..."
-        $p = Start-Process -FilePath $nodeExe `
-            -ArgumentList 'src/index.js' `
-            -WorkingDirectory $botDir `
-            -RedirectStandardOutput $consoleLog -RedirectStandardError $errLog `
-            -PassThru -WindowStyle Hidden
+        $p = Start-HiddenProcess $nodeExe 'src/index.js' $botDir
         if ($p) { Log "bot started, pid=$($p.Id)" }
-        else { Log "Start-Process returned null!" }
+        else { Log "start failed!" }
     }
 
     # guard local Ollama
@@ -64,11 +76,7 @@ function Start-Guarded {
         $ollamaProc = Get-Process -Name 'ollama' -ErrorAction SilentlyContinue
         if (-not $ollamaProc) {
             Log "ollama not running, starting..."
-            $op = Start-Process -FilePath $ollamaExe `
-                -ArgumentList 'serve' `
-                -WorkingDirectory 'E:\Ollama' `
-                -RedirectStandardOutput $ollamaLog -RedirectStandardError "$ollamaLog.err" `
-                -PassThru -WindowStyle Hidden
+            $op = Start-HiddenProcess $ollamaExe 'serve' 'E:\Ollama'
             if ($op) { Log "ollama started, pid=$($op.Id)" }
         }
     }

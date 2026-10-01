@@ -72,12 +72,16 @@ async function fetchWithTimeout(url, timeoutMs) {
  * -NoProfile：跳过用户配置，启动更快且不受个人配置干扰
  * windowsHide：不弹出黑色控制台窗口
  */
+// CREATE_NO_WINDOW：从系统层面禁止为子进程创建控制台窗口（windowsHide 偶有闪现，此标志根治）
+const CREATE_NO_WINDOW = 0x08000000;
+
 function runPowerShell(command, timeoutMs) {
   try {
     const r = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
       encoding: 'utf8',
       timeout: timeoutMs || 10000,
       windowsHide: true,
+      creationFlags: CREATE_NO_WINDOW,
     });
     if (r.error) return ''; // 超时（被杀）或无法启动 PowerShell，按"查不到"处理
     return String(r.stdout || '');
@@ -223,6 +227,7 @@ async function doStartBot() {
       detached: true,           // 脱离父进程：控制台关闭后 bot 继续在后台跑
       stdio: ['ignore', logFd, logFd], // stdin 关闭，输出全部进日志文件
       windowsHide: true,        // 不弹出控制台黑窗
+      creationFlags: CREATE_NO_WINDOW,
     });
     child.unref(); // 主进程不等待、不持有引用
     return { ok: true, pid: child.pid };
@@ -248,6 +253,7 @@ async function doStopBot() {
     encoding: 'utf8',
     timeout: 15000,
     windowsHide: true,
+    creationFlags: CREATE_NO_WINDOW,
   });
   if (r.error) {
     return { ok: false, error: '停止命令执行失败：' + errMessage(r.error) };
@@ -401,6 +407,7 @@ ipcMain.handle('importModel', async (_event, payload) => {
       timeout: 600000,
       encoding: 'utf8',
       windowsHide: true,
+      creationFlags: CREATE_NO_WINDOW,
     });
     const exitCode = (r.status === null || r.status === undefined) ? -1 : r.status;
     let log = [String(r.stdout || ''), String(r.stderr || '')].filter(Boolean).join('\n').trim();
@@ -419,6 +426,25 @@ ipcMain.handle('importModel', async (_event, payload) => {
 });
 
 /**
+ * 取当前要读的日志文件：优先最新一天的按天日志（bot-YYYY-MM-DD.log，bot 自己写入，
+ * 内容最全）；不存在则回退 bot-console.log。
+ */
+function currentLogFile() {
+  try {
+    const dir = path.dirname(BOT_LOG);
+    const daily = fs.readdirSync(dir)
+      .filter((f) => /^bot-20\d{2}-\d{2}-\d{2}\.log$/.test(f))
+      .sort()
+      .pop();
+    if (daily) {
+      const p = path.join(dir, daily);
+      if (fs.existsSync(p)) return p;
+    }
+  } catch (err) { /* fallthrough */ }
+  return BOT_LOG;
+}
+
+/**
  * 读取 bot 日志尾部。
  * 参数 lines：要的行数，默认 30（限制 1~1000）。
  * 大日志只读文件末尾 128KB，避免读爆内存。
@@ -429,15 +455,16 @@ ipcMain.handle('getLogs', async (_event, lines) => {
     let n = Math.floor(Number(lines) || 30);
     n = Math.max(1, Math.min(1000, n));
 
-    if (!fs.existsSync(BOT_LOG)) {
+    const logFile = currentLogFile();
+    if (!fs.existsSync(logFile)) {
       return { ok: true, lines: [] };
     }
-    const stat = fs.statSync(BOT_LOG);
+    const stat = fs.statSync(logFile);
     const READ_BYTES = 128 * 1024;
     const start = Math.max(0, stat.size - READ_BYTES);
     const len = stat.size - start;
 
-    const fd = fs.openSync(BOT_LOG, 'r');
+    const fd = fs.openSync(logFile, 'r');
     const buf = Buffer.alloc(len);
     try {
       fs.readSync(fd, buf, 0, len, start);
@@ -472,6 +499,7 @@ ipcMain.handle('startOllama', async () => {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
+      creationFlags: CREATE_NO_WINDOW,
     });
     child.unref();
     return { ok: true, alreadyRunning: false };
