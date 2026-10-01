@@ -21,11 +21,16 @@ export function splitBubbles(text, max = 3) {
 }
 
 /**
- * 逐条发送气泡，条间 400-700ms 随机延迟（模拟真人连发）
+ * 逐条发送气泡：先等一段"拟人延迟"，条间 400-700ms 随机延迟（模拟真人连发）
  * @param {(text: string, index: number) => Promise<void>} send 单条发送函数
  * @param {string[]} texts 已拆分的气泡列表
+ * @param {[number, number]} [delayRange] 首条前的随机延迟区间（秒），如 [3, 4]
  */
-export async function sendBubbles(send, texts) {
+export async function sendBubbles(send, texts, delayRange) {
+  if (Array.isArray(delayRange) && delayRange.length === 2) {
+    const [lo, hi] = delayRange
+    await sleep((lo + Math.random() * (hi - lo)) * 1000)
+  }
   const list = Array.isArray(texts) && texts.length > 0 ? texts : ['']
   for (let i = 0; i < list.length; i++) {
     if (i > 0) await sleep(400 + Math.random() * 300)

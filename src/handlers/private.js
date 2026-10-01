@@ -98,7 +98,7 @@ export async function handlePrivateMessage(msg) {
   })
   if (reply) {
     const bubbles = splitBubbles(reply)
-    await sendBubbles((t) => msg.say(t), bubbles)
+    await sendBubbles((t) => msg.say(t), bubbles, config.ai.replyDelaySeconds)
     recordReply(key, config.private.dailyLimit ?? 200)
     // 回复完成后，后台提取长期记忆（不阻塞回复）
     if (isMemoryEnabled()) {

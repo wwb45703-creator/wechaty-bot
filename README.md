@@ -16,9 +16,28 @@
 
 以下为本机部署的完整配置文档。
 
+## ⭐ 开关与启动（重要，照这个来）
+
+**三个双击即用的开关**（项目根目录）：
+
+| 双击 | 作用 |
+|---|---|
+| `bot-start.bat` | 启用机器人：删开关标记 + 立即拉起机器人/Ollama + 顺带启动微信客户端 |
+| `bot-stop.bat` | 彻底停止：创建停用标记 + 停掉机器人/Ollama/守护残留。**停了就绝不会被拉起** |
+| `bot-status.bat` | 一眼看清：开关状态、看门狗、机器人、Ollama、微信各自状态 |
+
+**确定性保证**：看门狗是 Windows 计划任务（每分钟跑一轮单轮体检，跑完即退，无常驻进程、无僵死可能）。每轮先看开关文件 `state\bot-disabled.flag`——存在就直接退出。所以：
+- **停用后**：flag 在，看门狗每分钟看了都跳过，绝不会被拉起（实测跨 2 个周期确认）
+- **启用后**：即使机器人意外退出，1 分钟内看门狗自动补齐（实测通过）
+
+**开机自启**：已注册（用户登录项 + 看门狗计划任务双保险）。开机登录后 1 分钟内机器人自动上线，你只需**登录微信客户端**（首次扫码，之后微信自带自动登录）。想几天不用就双击 `bot-stop.bat`，回来再 `bot-start.bat`。
+
+**注意**：`start.bat`（前台调试用，无守护）、`start-supervisor.bat`、`stop-bot.bat` 已是旧入口（后两个自动转调新开关），日常请用三件套。
+
 ## 回复形式
 
 - **多条连发**：AI 可以像真人一样把一条回复拆成多条气泡连发（条间 400-700ms 随机延迟）；AI 回复里用 `|||` 分隔即分条，换行也会拆条（最多 3 条，超出部分合并）
+- **拟人延迟**：收到消息后随机延迟 3-4 秒才回复（`ai.replyDelaySeconds` 可调，设成 `[0,0]` 关闭），避免秒回的机器人感
 - **emoji**：AI 可以在文字中使用 unicode emoji 字符
 - **GIF 表情包**：❌ **实验失败（BLOCKED）**。已实现注入代理层的 sendImageMsg（镜像 wxhelper 的调用形态），但原生调用 `kSendImageMsg(0x2383560)` 会异步导致微信崩溃（已试 3 种参数形态：立即释放/不释放/完整 WeChatString 结构体）。基础设施保留（sidecar.sendPicMsg、puppet.messageSendFile、scripts/test-sticker.mjs），后续可继续逆向。`scripts/probe-offsets.mjs` 可反汇编验证任意 offset。
 
@@ -93,7 +112,8 @@
 
 | 字段 | 作用 |
 |---|---|
-| `ai.model` | Ollama 模型名。中文对话建议 `ollama pull qwen2.5:7b` 后改成 `qwen2.5:7b`（比 gpt-oss 更适合中文闲聊、速度更快） |
+| `ai.model` | Ollama 模型名。当前 `huihui_ai/qwen3-abliterated:8b`（中文好、限制少）；换回 gpt-oss:20b 只改这一行 |
+| `ai.replyDelaySeconds` | 收到消息到回复的随机延迟区间（秒），默认 `[3, 4]`；设 `[0, 0]` 关闭 |
 | `ai.temperature` | 回复随机性，越高越"活泼" |
 | `persona` | 机器人人设（名字、性格、回复风格都在这里改） |
 | `private.whitelist` | 私聊白名单，空数组 = 对所有人生效；填微信备注名/昵称则只回复这些人 |
@@ -108,7 +128,8 @@
 
 ## 五、常见问题
 
-- **推荐用守护模式启动**：双击 `start-supervisor.bat`（窗口可最小化，每 30 秒体检机器人，进程意外退出会自动拉起，日志见 `logs\supervisor.log`）。停止机器人：先关守护窗口，再结束 node 进程
+- **推荐用开关三件套**（`bot-start.bat` / `bot-stop.bat` / `bot-status.bat`，见「⭐ 开关与启动」章节）。看门狗日志：`logs\supervisor.log`
+- **supervisor/看门狗异常** → 看门狗是计划任务（每分钟新进程），天然无僵死；若机器人 1 分钟未自动恢复，双击 `bot-start.bat` 手动触发一轮
 - **启动后微信崩溃/闪退** → 检查微信版本是否正好 3.9.10.27；火绒是否加了信任区
 - **机器人不动、无回复** → 先发 `ding` 测通路；再看 `logs\` 最新日志；确认群名和 config 完全一致（包括表情、空格）
 - **回复很慢** → 已换用 qwen3-abliterated:8b（基本进显存，数秒回复）；如改回 gpt-oss:20b 首次加载要 1-2 分钟

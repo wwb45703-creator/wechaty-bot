@@ -1,6 +1,8 @@
 @echo off
-rem Bot supervisor launcher (ASCII-only on purpose)
-rem Keeps the wechaty bot alive: auto-restarts it if it dies.
+rem [deprecated] use bot-start.bat instead. Kept for compatibility.
 chcp 65001 >nul
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\supervisor.ps1"
+echo [hint] start-supervisor.bat has been replaced by bot-start.bat, starting it for you...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\bot-ctl.ps1" start
+echo.
+pause

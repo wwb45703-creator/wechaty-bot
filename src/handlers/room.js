@@ -136,7 +136,7 @@ export async function handleRoomMessage(msg, room) {
     await sendBubbles(async (t, i) => {
       if (i === 0) await room.say(`@${name} ${t}`, talker)
       else await room.say(t)
-    }, bubbles)
+    }, bubbles, config.ai.replyDelaySeconds)
     recordReply(key, config.roomDailyLimit ?? 500)
     if (isMemoryEnabled()) {
       setImmediate(() => {

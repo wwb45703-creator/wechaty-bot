@@ -1,7 +1,8 @@
 @echo off
-rem Stop the wechaty bot (and its supervisor if running). ASCII-only on purpose.
-rem If the supervisor was started as Administrator, run this as Administrator too.
+rem [deprecated] use bot-stop.bat instead. Kept for compatibility.
 chcp 65001 >nul
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\stop-bot.ps1"
+echo [hint] stop-bot.bat has been replaced by bot-stop.bat, running it for you...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\bot-ctl.ps1" stop
+echo.
 pause
