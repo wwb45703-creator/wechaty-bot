@@ -42,12 +42,16 @@ export function resetConversation(key) {
   conversations.delete(key)
 }
 
-/** 去掉部分本地模型输出中的思考段 */
+/** 去掉部分本地模型输出中的思考段和特殊 token 残留 */
 function stripThink(text) {
-  return String(text || '')
+  let out = String(text || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<\|channel\|>[\s\S]*?<\|message\|>/gi, '')
-    .trim()
+    .replace(/<\|(?:im_end|im_start|endoftext|eot_id|start_header_id|end_header_id)\|>/gi, '')
+    .replace(/<think>|<\/think>/gi, '')
+  // 8B 模型偶尔无视停止符、续写幻觉对话（"user ... assistant ..."），从首个角色标记行截断
+  out = out.replace(/\n?\s*(?:user|assistant|system)\s*\n[\s\S]*$/i, '')
+  return out.trim()
 }
 
 async function callOllama(messages) {

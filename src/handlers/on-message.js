@@ -3,6 +3,7 @@ import { logger } from '../logger.js'
 import { handlePrivateMessage } from './private.js'
 import { handleRoomMessage } from './room.js'
 import { handleImageMessage, isVisionEnabled } from './on-image.js'
+import { handleLinkMessage, hasProcessableLink } from './on-link.js'
 
 /**
  * 消息总入口：只处理文本消息，按私聊/群聊分流
@@ -26,6 +27,13 @@ export async function onMessage(msg) {
     const isPlainText = type === types.Message.Text ||
       (type === types.Message.Unknown && !/^\s*</.test(text))
     if (!isPlainText) return
+
+    // 链接识别：消息含 URL 时优先走抓取回复
+    // （私聊全部生效；群聊仅 config.rooms 已登记的群自动处理，未登记群维持 @ 触发逻辑）
+    if (hasProcessableLink(text, room ? await room.topic().catch(() => '') : null)) {
+      await handleLinkMessage(msg, room, text)
+      return
+    }
 
     if (room) {
       await handleRoomMessage(msg, room)
