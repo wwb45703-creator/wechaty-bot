@@ -2,7 +2,7 @@ import config, { findRoomConfig } from '../config-loader.js'
 import { logger } from '../logger.js'
 import { chat, extractFacts, resetConversation } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles } from '../utils.js'
+import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 
@@ -45,13 +45,14 @@ export async function handleRoomMessage(msg, room) {
   const mode = rc?.mode ?? config.defaultRoomMode ?? 'mention'
   const wakeWords = rc?.wakeWords ?? config.defaultWakeWords ?? []
 
+  let selfName = '' // 机器人昵称（函数级：@ 剥离和触发判定共用）
   let triggered = false
   if (mode === 'all') {
     triggered = true
   } else {
     // puppet-xp 不回传 mention 列表，这里用"文本包含 @机器人昵称"做主判定
     const w = msg.wechaty
-    const selfName = w?.currentUser?.name?.() || w?.userSelf?.()?.name?.() || ''
+    selfName = w?.currentUser?.name?.() || w?.userSelf?.()?.name?.() || ''
     const atMe = selfName && text.includes(`@${selfName}`)
     const mentioned = atMe || (await msg.mentionSelf().catch(() => false))
     const wake = wakeWords.some((w) => w && text.includes(w))
@@ -133,9 +134,11 @@ export async function handleRoomMessage(msg, room) {
   })
   if (reply) {
     const bubbles = splitBubbles(reply)
+    // @ 提醒只由代码在首条添加；AI 内容里的 @xx 全部剥离（防 "@额 @额" 叠加）
     await sendBubbles(async (t, i) => {
-      if (i === 0) await room.say(`@${name} ${t}`, talker)
-      else await room.say(t)
+      const clean = stripAtMentions(t, [name, selfName].filter(Boolean))
+      if (i === 0) await room.say(`@${name} ${clean}`, talker)
+      else await room.say(clean)
     }, bubbles, config.ai.replyDelaySeconds)
     recordReply(key, config.roomDailyLimit ?? 500)
     if (isMemoryEnabled()) {

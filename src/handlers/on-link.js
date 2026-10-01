@@ -12,7 +12,7 @@ import config from '../config-loader.js'
 import { logger } from '../logger.js'
 import { chat } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles } from '../utils.js'
+import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
 import { extractFirstUrl, fetchPageText } from '../url-utils.js'
 
 function linksConf() {
@@ -94,12 +94,14 @@ export async function handleLinkMessage(msg, room, text) {
   }
 
   const bubbles = splitBubbles(reply)
+  const selfName = msg.wechaty?.currentUser?.name?.() || msg.wechaty?.userSelf?.()?.name?.() || ''
   await sendBubbles(async (t, i) => {
+    const clean = room ? stripAtMentions(t, [name, selfName].filter(Boolean)) : t
     if (room) {
-      if (i === 0) await room.say(`@${name} ${t}`, talker)
-      else await room.say(t)
+      if (i === 0) await room.say(`@${name} ${clean}`, talker)
+      else await room.say(clean)
     } else {
-      await msg.say(t)
+      await msg.say(clean)
     }
   }, bubbles, config.ai?.replyDelaySeconds)
 

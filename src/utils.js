@@ -21,6 +21,21 @@ export function splitBubbles(text, max = 3) {
 }
 
 /**
+ * 剥离回复内容中的 @ 提及（防止与代码添加的 @ 叠加成 "@xx @xx"）：
+ *  1. 字面移除指定名字的 "@昵称"（说话人/机器人自己）
+ *  2. 行首 AI 自行模仿的 "@某人" 序列一并剥掉
+ */
+export function stripAtMentions(text, names = []) {
+  let t = String(text || '')
+  for (const n of names) {
+    if (n) t = t.split(`@${n}`).join('')
+  }
+  t = t.replace(/^(?:\s*@\S+\s*)+/gm, (m) => (m.includes('\n') ? '\n' : ''))
+  t = t.replace(/@\s*(?=[，。！？、\s]|$)/g, '') // 清理剥离后残留的孤立 @
+  return t.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/**
  * 逐条发送气泡：先等一段"拟人延迟"，条间 400-700ms 随机延迟（模拟真人连发）
  * @param {(text: string, index: number) => Promise<void>} send 单条发送函数
  * @param {string[]} texts 已拆分的气泡列表
