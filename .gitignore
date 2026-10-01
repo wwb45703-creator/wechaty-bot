@@ -12,3 +12,5 @@ config.json
 *.memory.json
 *.memory/
 .DS_Store
+ui/release/
+ui/node_modules/

@@ -1,0 +1,176 @@
+/* 微信机器人控制台 —— 粉白配色 + 高斯模糊毛玻璃 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #fff0f5 0%, #ffe4ee 45%, #ffd6e0 100%);
+  color: #5c3a4d;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ===== 背景光斑（毛玻璃层次感） ===== */
+.blob { position: fixed; border-radius: 50%; filter: blur(90px); opacity: 0.5; z-index: 0; pointer-events: none; }
+.blob-1 { width: 420px; height: 420px; background: #ffb3c8; top: -120px; right: -80px; }
+.blob-2 { width: 360px; height: 360px; background: #ffd0de; bottom: -100px; left: -60px; }
+.blob-3 { width: 260px; height: 260px; background: #ffc2d4; top: 40%; left: 30%; opacity: 0.35; }
+
+/* ===== 毛玻璃卡片基类 ===== */
+.glass, .card {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid rgba(255, 143, 171, 0.25);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(255, 107, 157, 0.12);
+}
+
+/* ===== 布局 ===== */
+.layout { display: flex; height: 100vh; position: relative; z-index: 1; gap: 16px; padding: 16px; }
+
+.sidebar {
+  width: 200px; flex-shrink: 0;
+  display: flex; flex-direction: column; padding: 18px 12px; gap: 6px;
+}
+.brand { display: flex; align-items: center; gap: 8px; padding: 6px 10px 16px; }
+.brand-icon { font-size: 22px; }
+.brand-name { font-weight: 700; font-size: 15px; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; border: none; border-radius: 14px;
+  background: transparent; color: #a8788f; font-size: 14px; cursor: pointer;
+  transition: all 0.2s ease; text-align: left; width: 100%;
+}
+.nav-item:hover { background: rgba(255, 143, 171, 0.15); color: #5c3a4d; }
+.nav-item.active { background: linear-gradient(135deg, #ff8fab, #ff6b9d); color: #fff; font-weight: 600; box-shadow: 0 4px 14px rgba(255, 107, 157, 0.35); }
+.nav-icon { font-size: 16px; }
+.sidebar-footer { margin-top: auto; text-align: center; color: #c9a3b5; font-size: 12px; }
+
+.content { flex: 1; overflow-y: auto; padding-right: 4px; }
+
+/* ===== 页面切换动画 ===== */
+.page { display: none; flex-direction: column; gap: 14px; animation: fadeUp 0.28s ease; }
+.page.active { display: flex; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ===== 卡片 ===== */
+.card { padding: 20px 22px; }
+.card-title { font-weight: 700; font-size: 15px; margin-bottom: 12px; }
+.status-card { padding: 26px 28px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.small-card { padding: 16px 20px; }
+.small-title { font-weight: 600; font-size: 13px; color: #a8788f; margin-bottom: 10px; }
+.small-line { display: flex; align-items: center; gap: 8px; font-size: 15px; margin-bottom: 12px; }
+.small-note { font-size: 12px; color: #c9a3b5; }
+
+/* ===== 状态徽章 ===== */
+.status-row { display: flex; justify-content: space-between; align-items: center; }
+.status-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+.status-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.badge {
+  display: inline-block; padding: 5px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 600;
+  background: rgba(255, 143, 171, 0.15); color: #b05a78;
+  border: 1px solid rgba(255, 143, 171, 0.3);
+}
+.badge.ok { background: rgba(134, 214, 161, 0.18); color: #2f8f57; border-color: rgba(134, 214, 161, 0.4); }
+.badge.off { background: rgba(160, 140, 150, 0.15); color: #93808a; border-color: rgba(160, 140, 150, 0.3); }
+.badge-model { background: rgba(255, 143, 171, 0.12); border: 1.5px solid #ff8fab; color: #d94f7e; font-weight: 700; }
+
+/* 状态圆点 */
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #c9a3b5; }
+.dot.ok { background: #4caf7d; box-shadow: 0 0 8px rgba(76, 175, 125, 0.6); }
+.dot.off { background: #d8b7c4; }
+
+/* ===== 大圆形启停按钮 ===== */
+.power-btn {
+  width: 108px; height: 108px; border-radius: 50%;
+  border: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: #fff; font-size: 13px; font-weight: 700;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+  background: linear-gradient(145deg, #ff8fab, #ff5c93);
+  box-shadow: 0 6px 24px rgba(255, 92, 147, 0.4), inset 0 -3px 8px rgba(0, 0, 0, 0.08);
+}
+.power-btn:hover:not(:disabled) { transform: translateY(-3px) scale(1.03); box-shadow: 0 10px 30px rgba(255, 92, 147, 0.5); }
+.power-btn:disabled { opacity: 0.55; cursor: wait; }
+.power-btn.stop { background: linear-gradient(145deg, #b8a4ad, #96828c); box-shadow: 0 6px 24px rgba(150, 130, 140, 0.4); }
+.power-icon { font-size: 30px; line-height: 1; }
+
+.spinner { width: 22px; height: 22px; border: 3px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== 按钮 ===== */
+.btn {
+  border: none; border-radius: 12px; padding: 9px 18px;
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s ease;
+}
+.btn:disabled { opacity: 0.5; cursor: wait; }
+.btn.primary { background: linear-gradient(135deg, #ff8fab, #ff6b9d); color: #fff; box-shadow: 0 4px 14px rgba(255, 107, 157, 0.3); }
+.btn.primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(255, 107, 157, 0.4); }
+.btn.ghost { background: rgba(255, 143, 171, 0.12); color: #d94f7e; border: 1px solid rgba(255, 143, 171, 0.35); }
+.btn.ghost:hover:not(:disabled) { background: rgba(255, 143, 171, 0.22); }
+
+/* ===== 输入框 ===== */
+.text-input {
+  flex: 1; padding: 10px 14px; border-radius: 12px;
+  border: 1px solid rgba(255, 143, 171, 0.35); outline: none;
+  background: rgba(255, 255, 255, 0.7); color: #5c3a4d; font-size: 13px;
+  transition: border 0.2s ease;
+  user-select: text;
+}
+.text-input:focus { border-color: #ff6b9d; box-shadow: 0 0 0 3px rgba(255, 107, 157, 0.15); }
+
+/* ===== 日志区 ===== */
+.log-box {
+  background: #3a2b33; color: #ffd9e4; border-radius: 14px;
+  padding: 14px 16px; font-family: Consolas, monospace; font-size: 12px;
+  height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  user-select: text;
+}
+.log-box.small { height: 140px; margin-top: 10px; }
+
+/* ===== 模型列表 ===== */
+.model-list { display: flex; flex-direction: column; gap: 10px; max-height: 300px; overflow-y: auto; }
+.model-item {
+  display: flex; justify-content: space-between; align-items: center;
+  background: rgba(255, 255, 255, 0.55); border: 1px solid rgba(255, 143, 171, 0.2);
+  border-radius: 14px; padding: 12px 16px;
+}
+.model-item.current { border: 1.5px solid #ff6b9d; background: rgba(255, 214, 224, 0.5); }
+.model-name { font-weight: 600; font-size: 14px; word-break: break-all; }
+.model-size { font-size: 12px; color: #a8788f; margin-top: 3px; }
+.model-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+/* ===== 导入 ===== */
+.import-card .import-notice {
+  background: rgba(255, 214, 224, 0.45); border-radius: 12px;
+  padding: 12px 16px; font-size: 12.5px; line-height: 1.8; margin-bottom: 14px;
+  border: 1px dashed rgba(255, 107, 157, 0.4);
+}
+.import-row { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+
+/* ===== 关于 ===== */
+.about-line { font-size: 13.5px; line-height: 2.1; color: #7a5568; }
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 143, 171, 0.4); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 107, 157, 0.6); }
+
+/* ===== Toast ===== */
+.toast-box { position: fixed; top: 18px; right: 18px; z-index: 99; display: flex; flex-direction: column; gap: 10px; }
+.toast {
+  padding: 12px 18px; border-radius: 14px; font-size: 13px; max-width: 380px;
+  background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 143, 171, 0.4); box-shadow: 0 8px 24px rgba(255, 107, 157, 0.2);
+  animation: toastIn 0.25s ease; color: #5c3a4d;
+}
+.toast.err { border-color: rgba(220, 80, 80, 0.5); color: #b04040; background: rgba(255, 235, 235, 0.9); }
+@keyframes toastIn { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: none; } }
+
+.hint { margin-top: 14px; font-size: 12.5px; color: #c9a3b5; min-height: 18px; }

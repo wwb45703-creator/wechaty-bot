@@ -1,0 +1,29 @@
+{
+  "name": "wechaty-bot-console",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.wwb.wechaty-bot-console",
+    "productName": "微信机器人控制台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": "dir",
+      "icon": "build/icon.ico"
+    }
+  }
+}

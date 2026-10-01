@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src http://127.0.0.1:11434">
+  <title>微信机器人控制台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 背景装饰光斑（毛玻璃层次感） -->
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+
+  <div class="layout">
+    <!-- 左侧导航 -->
+    <nav class="sidebar glass">
+      <div class="brand">
+        <span class="brand-icon">🤖</span>
+        <span class="brand-name">机器人控制台</span>
+      </div>
+      <button class="nav-item active" data-page="home">
+        <span class="nav-icon">🏠</span><span>主页</span>
+      </button>
+      <button class="nav-item" data-page="models">
+        <span class="nav-icon">🧠</span><span>模型管理</span>
+      </button>
+      <button class="nav-item" data-page="about">
+        <span class="nav-icon">ℹ️</span><span>关于</span>
+      </button>
+      <div class="sidebar-footer">v1.0.0</div>
+    </nav>
+
+    <!-- 右侧内容区 -->
+    <main class="content">
+      <!-- ===== 主页 ===== -->
+      <section class="page active" id="page-home">
+        <div class="card status-card">
+          <div class="status-row">
+            <div>
+              <div class="status-title">机器人状态</div>
+              <div class="status-badges">
+                <span class="badge" id="badge-bot">检测中…</span>
+                <span class="badge badge-model" id="badge-model" title="当前模型">—</span>
+              </div>
+            </div>
+            <button class="power-btn" id="btn-power" title="启动机器人">
+              <span class="power-icon">⏻</span>
+              <span class="power-text">启动</span>
+            </button>
+          </div>
+          <div class="hint" id="home-hint"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card small-card">
+            <div class="small-title">Ollama AI 服务</div>
+            <div class="small-line"><span class="dot" id="dot-ollama"></span><span id="text-ollama">检测中…</span></div>
+            <button class="btn ghost" id="btn-ollama">启动 Ollama</button>
+          </div>
+          <div class="card small-card">
+            <div class="small-title">微信客户端</div>
+            <div class="small-line"><span class="dot" id="dot-wechat"></span><span id="text-wechat">检测中…</span></div>
+            <div class="small-note">机器人依赖已登录的微信，请保持登录</div>
+          </div>
+        </div>
+
+        <div class="card log-card">
+          <div class="card-title">最近日志</div>
+          <pre class="log-box" id="log-box">加载中…</pre>
+        </div>
+      </section>
+
+      <!-- ===== 模型管理 ===== -->
+      <section class="page" id="page-models">
+        <div class="card">
+          <div class="status-row">
+            <div>
+              <div class="status-title">当前使用模型</div>
+              <div class="badge badge-model" id="models-current">—</div>
+            </div>
+            <button class="btn ghost" id="btn-refresh-models">刷新列表</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">已安装模型（Ollama）</div>
+          <div id="model-list" class="model-list">加载中…</div>
+        </div>
+
+        <div class="card import-card">
+          <div class="card-title">导入本地模型</div>
+          <div class="import-notice">
+            <div>✅ 仅支持 <b>.gguf</b> 格式文件（Ollama 原生格式，从 HuggingFace / ModelScope 下载模型时选择 GGUF 版本）</div>
+            <div>❌ .safetensors / .bin / .pth 等格式需先用 llama.cpp 的 convert_hf_to_gguf.py 转换为 GGUF 后才能导入</div>
+          </div>
+          <div class="import-row">
+            <button class="btn ghost" id="btn-pick-gguf">选择 .gguf 文件…</button>
+            <input type="text" class="text-input" id="gguf-path" placeholder="或直接粘贴 .gguf 文件的完整路径" spellcheck="false">
+          </div>
+          <div class="import-row">
+            <input type="text" class="text-input" id="gguf-name" placeholder="模型名（字母/数字开头，可含 . _ : - ，如 my-model:7b）" spellcheck="false">
+            <button class="btn primary" id="btn-import">开始导入</button>
+          </div>
+          <pre class="log-box small" id="import-log" hidden></pre>
+        </div>
+      </section>
+
+      <!-- ===== 关于 ===== -->
+      <section class="page" id="page-about">
+        <div class="card">
+          <div class="card-title">关于</div>
+          <div class="about-line">微信机器人控制台 v1.0.0</div>
+          <div class="about-line">本地项目路径：E:\wechaty-bot</div>
+          <div class="about-line">AI 推理：本地 Ollama（聊天数据不出电脑）</div>
+        </div>
+        <div class="card">
+          <div class="card-title">使用提示</div>
+          <div class="about-line">• 主页大按钮控制机器人进程；关闭后看门狗不会再拉起</div>
+          <div class="about-line">• 切换模型后机器人会自动重启使新模型生效</div>
+          <div class="about-line">• 导入模型只认 .gguf 文件；导入完成后回到模型页点"设为当前"</div>
+          <div class="about-line">• 关闭本控制台不影响后台机器人继续运行</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 右上角 toast -->
+  <div class="toast-box" id="toast-box"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

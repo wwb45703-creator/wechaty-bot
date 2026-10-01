@@ -7,6 +7,7 @@
 - 🖼 **看图吐槽**：扔张表情包进群，AI 秒回锐评
 - ⏰ **定时发言**：cron 定时问候/发起话题
 - 🛡 **防刷屏**：会话冷却 + 每日上限 + 私聊白名单
+- 🖥 **控制台 UI**：粉白毛玻璃桌面应用，启停/模型管理/导入 GGUF 一目了然
 
 **下载安装包**（增量版/精简版 + 安装说明 + 注意事项）：[Releases · wechaty-bot-editions](https://github.com/wwb45703-creator/wechaty-bot-editions/releases)
 
@@ -40,6 +41,15 @@
 - **拟人延迟**：收到消息后随机延迟 3-4 秒才回复（`ai.replyDelaySeconds` 可调，设成 `[0,0]` 关闭），避免秒回的机器人感
 - **emoji**：AI 可以在文字中使用 unicode emoji 字符
 - **GIF 表情包**：❌ **实验失败（BLOCKED）**。已实现注入代理层的 sendImageMsg（镜像 wxhelper 的调用形态），但原生调用 `kSendImageMsg(0x2383560)` 会异步导致微信崩溃（已试 3 种参数形态：立即释放/不释放/完整 WeChatString 结构体）。基础设施保留（sidecar.sendPicMsg、puppet.messageSendFile、scripts/test-sticker.mjs），后续可继续逆向。`scripts/probe-offsets.mjs` 可反汇编验证任意 offset。
+
+## 🖥 控制台 UI（图形界面）
+
+粉白配色 + 高斯模糊毛玻璃的桌面应用（Electron），桌面快捷方式「微信机器人控制台」，双击即用：
+
+- **主页**：机器人状态大卡片 + 启动/关闭大按钮（与 flag 机制协同：关闭后看门狗不会拉起）、Ollama/微信状态、最近日志实时滚动
+- **模型管理**：Ollama 已装模型列表 + 一键"设为当前"（自动重启机器人生效）；**导入本地模型——仅支持 .gguf 格式**（.safetensors/.bin 等需先用 llama.cpp 的 convert_hf_to_gguf.py 转换），选择文件 → 填名字 → 自动 ollama create
+- 源码在 `ui/`，重新打包：`cd ui && npm run dist`；产物 `ui\release\win-unpacked\微信机器人控制台.exe`
+- 关闭控制台窗口不影响后台机器人；启停请用主页大按钮或根目录三件套 bat
 
 ## 一、运行前提（已完成的部分）
 
