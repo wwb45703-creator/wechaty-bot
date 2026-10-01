@@ -117,6 +117,7 @@ export async function handleRoomMessage(msg, room) {
   const personaHandled = handlePersonaCommand({
     text: question,
     ref: personaRef,
+    chatKey: key,
     reply: (t) => room.say(`@${name} ${t}`, talker).catch(() => {}),
   })
   if (personaHandled) {

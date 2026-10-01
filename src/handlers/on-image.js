@@ -8,6 +8,7 @@ import { describeImage } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles } from '../utils.js'
 import { parseImagePaths, findReadableImage, cleanupTemp } from '../image-utils.js'
+import { getActivePersonaName } from '../persona-commands.js'
 
 const DEFAULT_PROMPT =
   '这是微信里收到的一张图片。用一两句话点评或吐槽这张图，' +
@@ -47,8 +48,11 @@ export async function handleImageMessage(msg, room) {
     }
 
     const prompt = config.vision?.prompt || DEFAULT_PROMPT
+    // 看图点评跟随当前群/私聊的人设（完全切换的一部分）
+    const personaRef = { scope: isRoom ? 'room' : 'private', roomId: isRoom ? room.id : undefined, userId: talker.id }
+    const personaName = getActivePersonaName(personaRef)
     logger.info(`看图说话 -> ${isRoom ? `群[${topic}]` : '私聊'} ${name}: ${imageFile}`)
-    const comment = await describeImage({ imagePath: imageFile, prompt })
+    const comment = await describeImage({ imagePath: imageFile, prompt, personaName })
     cleanupTemp(imageFile)
 
     if (!comment) {

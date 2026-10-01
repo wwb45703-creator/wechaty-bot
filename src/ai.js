@@ -54,7 +54,8 @@ function stripThink(text) {
   return out.trim()
 }
 
-async function callOllama(messages) {
+async function callOllama(messages, opts) {
+  const o = opts || {}
   const base = new URL(aiConfig.baseUrl)
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
     throw new Error(`AI baseUrl 协议不支持: ${base.protocol}`)
@@ -72,7 +73,7 @@ async function callOllama(messages) {
         think: false,
         // 文本模型常驻显存（默认 2 小时），避免每波对话第一条消息等 12 秒冷加载
         keep_alive: aiConfig.keepAlive || '2h',
-        options: { temperature: aiConfig.temperature ?? 0.8 },
+        options: { temperature: o.temperature ?? aiConfig.temperature ?? 0.8 },
       }),
       signal: controller.signal,
     })
@@ -84,6 +85,19 @@ async function callOllama(messages) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * 复述退化检测：8B 模型偶发把 system 里的规则/角色卡整段背诵当回复。
+ * 取 system 两个位置的 20 字探针（去空白后）在回复中查找，命中即判定为复述。
+ */
+function isRuleEcho(reply, system) {
+  if (!reply || !system) return false
+  const r = reply.replace(/\s/g, '')
+  if (r.length < 30) return false
+  const compact = system.replace(/\s/g, '')
+  const probes = [compact.slice(0, 20), compact.slice(Math.floor(compact.length * 0.45), Math.floor(compact.length * 0.45) + 20)]
+  return probes.some((p) => p.length >= 12 && r.includes(p))
 }
 
 /**
@@ -110,7 +124,14 @@ export async function chat({ key, userText, systemExtra = '', memoryText = '', p
   const messages = [{ role: 'system', content: system }, ...history]
 
   try {
-    const reply = await callOllama(messages)
+    let reply = await callOllama(messages)
+    if (isRuleEcho(reply, system)) {
+      logger.warn(`[${key}] 模型复述规则文本，降温重试一次`)
+      reply = await callOllama(messages, { temperature: 0.55 })
+      if (isRuleEcho(reply, system)) {
+        logger.warn(`[${key}] 重试仍复述，按最后一次输出返回`)
+      }
+    }
     history.push({ role: 'assistant', content: reply })
     trimHistory(key)
     return reply
@@ -137,21 +158,30 @@ export async function generateOnce(prompt) {
 
 /**
  * 看图说话：把本地图片发给视觉模型，返回吐槽/描述文本，失败返回 null
+ * @param {string} [p.personaName] 角色卡名：让视觉点评也带上当前群/私聊的人设口吻
  */
-export async function describeImage({ imagePath, prompt }) {
+export async function describeImage({ imagePath, prompt, personaName = '' }) {
   const vcfg = configRef?.vision || {}
   const model = vcfg.model || 'qwen2.5vl:7b'
   try {
     const b64 = fs.readFileSync(imagePath).toString('base64')
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), (vcfg.timeoutSeconds || 90) * 1000)
+    // 视觉模型的人设：只取角色卡 + 口吻要求，不注入 personaBase（避免 ||| 连发等文本规则干扰单条点评）
+    let system = null
+    if (personaName && configRef?.personas?.[personaName]) {
+      system = configRef.personas[personaName] +
+        '\n\n用上面的角色身份和口吻，点评发来的图片，输出一两句话的中文口语点评。只输出点评本身。'
+    }
+    const messages = system ? [{ role: 'system', content: system }, { role: 'user', content: prompt, images: [b64] }]
+                            : [{ role: 'user', content: prompt, images: [b64] }]
     try {
       const res = await fetch(new URL('/api/chat', new URL(aiConfig.baseUrl)), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
-          messages: [{ role: 'user', content: prompt, images: [b64] }],
+          messages,
           stream: false,
           think: false,
           options: { temperature: vcfg.temperature ?? 0.9 },

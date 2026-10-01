@@ -13,6 +13,7 @@ import { logger } from '../logger.js'
 import { chat } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
+import { getActivePersonaName } from '../persona-commands.js'
 import { extractFirstUrl, fetchPageText } from '../url-utils.js'
 
 function linksConf() {
@@ -86,6 +87,7 @@ export async function handleLinkMessage(msg, room, text) {
     key: `link-once:${Date.now()}`, // 唯一 key：有人设、不污染会话记忆
     userText,
     systemExtra,
+    personaName: getActivePersonaName({ scope: room ? 'room' : 'private', roomId: room?.id, userId: talker.id }),
   })
 
   if (!reply) {

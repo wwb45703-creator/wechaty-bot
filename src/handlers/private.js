@@ -80,6 +80,7 @@ export async function handlePrivateMessage(msg) {
   const personaHandled = handlePersonaCommand({
     text,
     ref: personaRef,
+    chatKey: key,
     reply: (t) => msg.say(t).catch(() => {}),
   })
   if (personaHandled) {
