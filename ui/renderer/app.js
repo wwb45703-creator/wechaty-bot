@@ -137,16 +137,19 @@ async function onOllamaClick() {
 
 function renderModelList(models, current) {
   const box = $('model-list');
+  currentModels = Array.isArray(models) ? models : [];
   if (!models.length) {
     box.innerHTML = '<div class="small-note">没有已安装的模型（Ollama 未运行或列表为空）</div>';
     return;
   }
   box.innerHTML = models.map((m) => {
     const isCurrent = m.name === current;
+    const isLoaded = loadedSet.has(m.name);
     return '<div class="model-item' + (isCurrent ? ' current' : '') + '">'
       + '<div><div class="model-name">' + escapeHtml(m.name) + '</div>'
-      + '<div class="model-size">' + formatBytes(m.size) + '</div></div>'
+      + '<div class="model-size">' + formatBytes(m.size) + (isLoaded ? ' · <span style="color:#4caf7d">已驻留内存</span>' : '') + '</div></div>'
       + '<div class="model-right">'
+      + '<button class="btn ghost" data-load="' + escapeHtml(m.name) + '">' + (isLoaded ? '卸载' : '加载到内存') + '</button>'
       + (isCurrent ? '<span class="badge">使用中</span>'
                    : '<button class="btn ghost" data-use="' + escapeHtml(m.name) + '">设为当前</button>')
       + '</div></div>';
@@ -166,6 +169,11 @@ function renderModelList(models, current) {
       toast(r && r.restarted ? '已切换并重启机器人生效' : '已切换（机器人未运行，下次启动生效）');
       refreshModels();
     });
+  });
+
+  // 绑定"加载到内存/卸载"
+  box.querySelectorAll('[data-load]').forEach((b) => {
+    b.addEventListener('click', () => onToggleLoad(b.getAttribute('data-load'), b));
   });
 }
 
@@ -287,3 +295,121 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+/* ==================== 模型加载/卸载（显存管理） ==================== */
+
+let loadedSet = new Set();
+let currentModels = null;
+
+async function refreshLoaded() {
+  const fn = api('getLoadedModels');
+  if (!fn) return;
+  const r = await fn();
+  loadedSet = new Set((r && r.ok && Array.isArray(r.loaded) ? r.loaded : []).map((m) => m.name));
+  if (Array.isArray(currentModels)) renderModelList(currentModels, lastStatus ? lastStatus.currentModel : '');
+}
+
+async function onToggleLoad(name, btn) {
+  const willLoad = !loadedSet.has(name);
+  btn.disabled = true;
+  btn.textContent = willLoad ? '加载中…' : '卸载中…';
+  const fn = api(willLoad ? 'loadModel' : 'unloadModel');
+  if (!fn) { btn.disabled = false; return; }
+  const r = await fn(name);
+  btn.disabled = false;
+  if (r && r.ok === false) { toast((willLoad ? '加载' : '卸载') + '失败：' + (r.error || ''), true); }
+  else { toast(willLoad ? '模型已加载到内存' : '模型已卸载'); }
+  refreshLoaded();
+}
+
+/* ==================== 测试对话页 ==================== */
+
+async function onSendChat() {
+  const input = $('chat-input');
+  const box = $('chat-box');
+  const text = (input.value || '').trim();
+  if (!text) return;
+  input.value = '';
+
+  const add = (cls, content) => {
+    const el = document.createElement('div');
+    el.className = 'chat-msg ' + cls;
+    el.textContent = content;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+    return el;
+  };
+  add('me', text);
+  const thinking = add('thinking ai', '思考中…');
+
+  const fn = api('testChat');
+  if (!fn) { thinking.textContent = '功能开发中'; return; }
+  const r = await fn(text);
+  thinking.remove();
+  if (r && r.ok) add('ai', r.reply);
+  else add('ai', '出错了：' + ((r && r.error) || '未知错误'));
+}
+
+/* ==================== 自启开关 + 记忆管理 ==================== */
+
+async function initAutostart() {
+  const sw = $('switch-autostart');
+  const fn = api('getAutostart');
+  if (!fn || !sw) return;
+  const r = await fn();
+  sw.checked = Boolean(r && r.enabled);
+  sw.addEventListener('change', async () => {
+    const set = api('setAutostart');
+    if (!set) return;
+    const rr = await set(sw.checked);
+    toast(rr && rr.enabled ? '已开启开机自启' : '已关闭开机自启');
+  });
+}
+
+function renderMemories(list) {
+  const box = $('mem-list');
+  if (!box) return;
+  if (!list.length) { box.innerHTML = '<div class="small-note">还没有任何记忆档案（聊得多了自动生成）</div>'; return; }
+  box.innerHTML = list.map((m) => {
+    const label = m.facts >= 0 ? m.facts + ' 条要点' : '解析失败';
+    return '<div class="mem-item"><span class="mem-rel">' + escapeHtml(m.rel) + '</span>'
+      + '<span style="display:flex;gap:10px;align-items:center;">'
+      + '<span class="mem-meta">' + escapeHtml(label) + '</span>'
+      + '<button class="btn ghost" data-del="' + escapeHtml(m.rel) + '">删除</button></span></div>';
+  }).join('');
+  box.querySelectorAll('[data-del]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const rel = b.getAttribute('data-del');
+      if (!confirm('确定删除记忆档案 ' + rel + '？不可恢复。')) return;
+      const fn = api('deleteMemory');
+      if (!fn) return;
+      const r = await fn(rel);
+      if (r && r.ok) { toast('已删除'); refreshMemories(); }
+      else toast('删除失败：' + ((r && r.error) || ''), true);
+    });
+  });
+}
+
+async function refreshMemories() {
+  const fn = api('listMemories');
+  if (!fn) return;
+  const r = await fn();
+  renderMemories(r && r.ok ? r.list || [] : []);
+}
+
+/* ==================== 增强版 init（覆盖基础版） ==================== */
+
+const _baseInit = init;
+init = function () {
+  _baseInit();
+  $('btn-chat-send').addEventListener('click', onSendChat);
+  $('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSendChat(); });
+  $('btn-chat-clear').addEventListener('click', () => { $('chat-box').innerHTML = '<div class="chat-msg ai">已清空。继续测试对话。</div>'; });
+  $('btn-refresh-mem').addEventListener('click', refreshMemories);
+  initAutostart();
+  const _rm = refreshModels;
+  refreshModels = async function () {
+    await _rm();
+    await refreshLoaded();
+  };
+};

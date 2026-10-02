@@ -25,5 +25,8 @@
       "target": "dir",
       "icon": "build/icon.ico"
     }
+  },
+  "dependencies": {
+    "misans": "^4.1.0"
   }
 }

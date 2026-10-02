@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src http://127.0.0.1:11434">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src http://127.0.0.1:11434">
   <title>微信机器人控制台</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -24,6 +24,9 @@
       </button>
       <button class="nav-item" data-page="models">
         <span class="nav-icon">🧠</span><span>模型管理</span>
+      </button>
+      <button class="nav-item" data-page="chat">
+        <span class="nav-icon">💬</span><span>测试对话</span>
       </button>
       <button class="nav-item" data-page="about">
         <span class="nav-icon">ℹ️</span><span>关于</span>
@@ -85,6 +88,7 @@
 
         <div class="card">
           <div class="card-title">已安装模型（Ollama）</div>
+          <div class="small-note" style="margin-bottom:10px;">💡 点「加载到内存」可提前把模型装进显存，首次对话不再等待；「卸载」释放显存给其他模型</div>
           <div id="model-list" class="model-list">加载中…</div>
         </div>
 
@@ -106,13 +110,53 @@
         </div>
       </section>
 
+      <!-- ===== 测试对话 ===== -->
+      <section class="page" id="page-chat">
+        <div class="card chat-card">
+          <div class="status-row">
+            <div class="card-title">测试对话（当前人设 · 不发到微信）</div>
+            <button class="btn ghost" id="btn-chat-clear">清空</button>
+          </div>
+          <div class="chat-box" id="chat-box">
+            <div class="chat-msg ai">你好！这里是测试对话窗口，说什么都会按当前人设回复（不会发到微信）。</div>
+          </div>
+          <div class="chat-input-row">
+            <input type="text" class="text-input" id="chat-input" placeholder="输入测试消息，回车发送…" spellcheck="false">
+            <button class="btn primary" id="btn-chat-send">发送</button>
+          </div>
+        </div>
+      </section>
+
       <!-- ===== 关于 ===== -->
       <section class="page" id="page-about">
         <div class="card">
           <div class="card-title">关于</div>
-          <div class="about-line">微信机器人控制台 v1.0.0</div>
+          <div class="about-line">微信机器人控制台 v1.1.0</div>
           <div class="about-line">本地项目路径：E:\wechaty-bot</div>
           <div class="about-line">AI 推理：本地 Ollama（聊天数据不出电脑）</div>
+          <div class="about-line">字体：MiSans（小米，免费商用）</div>
+        </div>
+        <div class="card">
+          <div class="status-row">
+            <div>
+              <div class="card-title">开机自启</div>
+              <div class="small-note">登录 Windows 后自动启动机器人（微信仍需手动登录）</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="switch-autostart">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="status-row">
+            <div>
+              <div class="card-title">长期记忆管理</div>
+              <div class="small-note">机器人记住的每个人档案（memories 目录）</div>
+            </div>
+            <button class="btn ghost" id="btn-refresh-mem">刷新</button>
+          </div>
+          <div id="mem-list" class="mem-list">加载中…</div>
         </div>
         <div class="card">
           <div class="card-title">使用提示</div>

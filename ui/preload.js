@@ -40,6 +40,26 @@ contextBridge.exposeInMainWorld('botctl', {
   // 弹文件选择框选 .gguf → 选中路径字符串 | null（取消）；对话框异常时 {ok:false, error}
   pickGgufFile: (...args) => ipcRenderer.invoke('pickGgufFile', ...args),
 
+  // 已驻留内存的模型（GET /api/ps）→ {ok, loaded:[{name,sizeVram}]}
+  getLoadedModels: (...args) => ipcRenderer.invoke('getLoadedModels', ...args),
+
+  // 预加载模型到内存/显存（免首条消息等待）→ {ok}
+  loadModel: (...args) => ipcRenderer.invoke('loadModel', ...args),
+
+  // 从内存卸载模型（释放显存）→ {ok}
+  unloadModel: (...args) => ipcRenderer.invoke('unloadModel', ...args),
+
+  // 测试对话（读当前人设直接调 Ollama，不进微信）→ {ok, reply}
+  testChat: (...args) => ipcRenderer.invoke('testChat', ...args),
+
+  // 开机自启（HKCU Run 键）→ {ok, enabled}
+  getAutostart: (...args) => ipcRenderer.invoke('getAutostart', ...args),
+  setAutostart: (...args) => ipcRenderer.invoke('setAutostart', ...args),
+
+  // 长期记忆管理 → {ok, list:[{rel, facts, updatedAt}]} / 删除 {ok}
+  listMemories: (...args) => ipcRenderer.invoke('listMemories', ...args),
+  deleteMemory: (...args) => ipcRenderer.invoke('deleteMemory', ...args),
+
   /**
    * 订阅主进程每 3 秒推送的状态（通道 'status'）。
    * 返回取消订阅函数，组件销毁时记得调用。

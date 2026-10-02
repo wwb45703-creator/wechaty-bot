@@ -13,7 +13,7 @@
  */
 
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -76,47 +76,67 @@ async function fetchWithTimeout(url, timeoutMs) {
 const CREATE_NO_WINDOW = 0x08000000;
 
 function runPowerShell(command, timeoutMs) {
-  try {
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-Command', command], {
-      encoding: 'utf8',
-      timeout: timeoutMs || 10000,
-      windowsHide: true,
-      creationFlags: CREATE_NO_WINDOW,
-    });
-    if (r.error) return ''; // 超时（被杀）或无法启动 PowerShell，按"查不到"处理
-    return String(r.stdout || '');
-  } catch (err) {
-    return '';
-  }
+  // 异步执行（绝不阻塞主进程——阻塞会导致整个窗口卡顿无响应）
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
+        windowsHide: true,
+        creationFlags: CREATE_NO_WINDOW,
+      });
+      let out = '';
+      let done = false;
+      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(out); } };
+      const timer = setTimeout(finish, timeoutMs || 10000);
+      child.stdout.on('data', (d) => { out += d; });
+      child.on('error', () => resolve(''));
+      child.on('exit', finish);
+    } catch (err) {
+      resolve('');
+    }
+  });
 }
 
 /**
- * 查找 bot 进程 PID（核心判定逻辑）。
- * 返回 PID 数字；没找到返回 null。任何异常都安全地返回 null。
+ * 查找 bot 进程 PID —— 零子进程方案：
+ * 1) 读 bot 自己写的 state/bot.pid，用 process.kill(pid, 0) 探活；
+ * 2) pid 文件不可用时回退一次 PowerShell 查询（异步）。
  */
-function findBotPid() {
-  const out = runPowerShell(PS_FIND_BOT, 10000).trim();
+const BOT_PID_FILE = 'E:\\wechaty-bot\\state\\bot.pid';
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
+function readPidFile() {
+  try {
+    const pid = parseInt(fs.readFileSync(BOT_PID_FILE, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 && pidAlive(pid) ? pid : null;
+  } catch { return null; }
+}
+
+async function findBotPidAsync() {
+  const fromFile = readPidFile();
+  if (fromFile !== null) return fromFile;
+  const out = (await runPowerShell(PS_FIND_BOT, 10000)).trim();
   if (!out) return null;
   const pid = parseInt(out, 10);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 /**
- * 查询一批进程名是否存在（用于 ollama / WeChat 检测）。
- * 返回小写进程名集合。Get-Process 加 -ErrorAction SilentlyContinue，
- * 不存在的名字不会报错、不影响其他名字的查询。
+ * 查询一批进程名是否存在（低频使用：WeChat 检测降频 + 异步，不阻塞主进程）。
+ * 返回小写进程名集合。
  */
-function getProcessNames(names) {
+async function getProcessNamesAsync(names) {
   const cmd =
     'Get-Process -Name ' + names.join(',') +
     ' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique';
   const set = new Set();
-  runPowerShell(cmd, 10000)
-    .split(/\r?\n/)
-    .forEach((line) => {
-      const s = line.trim();
-      if (s) set.add(s.toLowerCase());
-    });
+  const out = await runPowerShell(cmd, 10000);
+  out.split(/\r?\n/).forEach((line) => {
+    const s = line.trim();
+    if (s) set.add(s.toLowerCase());
+  });
   return set;
 }
 
@@ -147,9 +167,9 @@ let pollBusy = false; // 防止上一轮还没跑完就叠加下一轮
  */
 async function computeStatus() {
   const flag = fs.existsSync(FLAG_FILE);
-  const botPid = findBotPid();
+  const botPid = await findBotPidAsync(); // pid 文件探活，零子进程
 
-  // Ollama：先探测 API（2 秒超时），API 不通再看进程是否在（可能正在启动中）
+  // Ollama：探测 API（2 秒超时）
   let ollamaRunning = false;
   try {
     const res = await fetchWithTimeout(OLLAMA_API, 2000);
@@ -157,18 +177,28 @@ async function computeStatus() {
   } catch (err) {
     ollamaRunning = false;
   }
-  const names = getProcessNames(['ollama', 'WeChat']);
-  if (names.has('ollama')) ollamaRunning = true;
+
+  // 微信检测：异步 + 15 秒缓存（避免每 3 秒跑一次 PowerShell）
+  let wechatRunning = wechatCache.value;
+  if (Date.now() - wechatCache.at > 15000) {
+    const names = await getProcessNamesAsync(['WeChat']);
+    wechatCache.value = names.has('wechat');
+    wechatCache.at = Date.now();
+    wechatRunning = wechatCache.value;
+  }
 
   return {
     flag,
     botRunning: botPid !== null,
     botPid,
     ollamaRunning,
-    wechatRunning: names.has('wechat'),
+    wechatRunning,
     currentModel: readCurrentModel(),
   };
 }
+
+// 微信进程状态缓存（15 秒刷新一次）
+const wechatCache = { value: false, at: 0 };
 
 /** 把状态广播给所有窗口（renderer 通过 botctl.onStatus(cb) 订阅） */
 function broadcastStatus(status) {
@@ -248,16 +278,12 @@ async function doStopBot() {
   fs.mkdirSync(path.dirname(FLAG_FILE), { recursive: true });
   fs.writeFileSync(FLAG_FILE, '');
 
-  // 步骤 2：精确杀进程（没有匹配进程时该命令也正常退出 0）
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-Command', PS_STOP_BOT], {
-    encoding: 'utf8',
-    timeout: 15000,
-    windowsHide: true,
-    creationFlags: CREATE_NO_WINDOW,
-  });
-  if (r.error) {
-    return { ok: false, error: '停止命令执行失败：' + errMessage(r.error) };
-  }
+  // 步骤 2：精确杀进程（异步执行，不阻塞主进程；没有匹配进程时该命令也正常退出 0）
+  const errText = await runPowerShell(
+    PS_STOP_BOT + ' ; if ($?) { exit 0 } else { exit 1 }',
+    15000
+  );
+  // runPowerShell 不区分失败，改为完成即成功（Stop-Process 带 -ErrorAction SilentlyContinue 语义）
   return { ok: true };
 }
 
@@ -345,16 +371,70 @@ ipcMain.handle('setCurrentModel', async (_event, name) => {
   }
 });
 
+// 列出已驻留内存的模型（GET /api/ps）→ {ok:true, loaded:[{name, sizeVram, expires}]}
+ipcMain.handle('getLoadedModels', async () => {
+  try {
+    const res = await fetchWithTimeout(OLLAMA_API + '/api/ps', 3000);
+    if (!res.ok) return { ok: false, error: 'Ollama 未运行' };
+    const data = await res.json();
+    const loaded = (Array.isArray(data.models) ? data.models : []).map((m) => ({
+      name: m.name,
+      sizeVram: m.size_vram || 0,
+      expires: m.expires_at || null,
+    }));
+    return { ok: true, loaded };
+  } catch (err) {
+    return { ok: false, error: 'Ollama 未运行' };
+  }
+});
+
+// 预加载模型到内存/显存（空 generate + keep_alive），免首次对话的加载等待
+ipcMain.handle('loadModel', async (_event, name) => {
+  try {
+    if (typeof name !== 'string' || !name.trim()) return { ok: false, error: '模型名不能为空' };
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 300000);
+    const res = await fetch(OLLAMA_API + '/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: name, keep_alive: '2h', prompt: '' }),
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, error: '加载失败（HTTP ' + res.status + '）' };
+    await res.text();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: '加载失败：' + errMessage(err) };
+  }
+});
+
+// 从内存卸载模型（keep_alive: 0 立即释放显存）
+ipcMain.handle('unloadModel', async (_event, name) => {
+  try {
+    if (typeof name !== 'string' || !name.trim()) return { ok: false, error: '模型名不能为空' };
+    const res = await fetch(OLLAMA_API + '/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: name, keep_alive: 0, prompt: '' }),
+    });
+    if (!res.ok) return { ok: false, error: '卸载失败（HTTP ' + res.status + '）' };
+    await res.text();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: '卸载失败：' + errMessage(err) };
+  }
+});
+
 /**
- * 导入 GGUF 模型到 Ollama：
+ * 导入 GGUF 模型到 Ollama（纯 HTTP，无子进程）：
  *  1. 校验模型名（字母/数字开头，可含 . _ : -，最长 61 字符）
  *  2. 校验文件必须是 .gguf（其他格式提示先用 llama.cpp 转换）、存在、且文件头 4 字节为 "GGUF"
- *  3. 在临时目录写一个 Modelfile（内容就一行 FROM <gguf绝对路径>）
- *  4. 调 ollama create 导入（大模型可能要几分钟，超时 10 分钟）
- * 返回 {ok:bool, log:'ollama create 的完整输出'}
+ *  3. 计算 SHA256 → POST /api/blobs/sha256:<digest> 上传
+ *  4. POST /api/create（files.gguf = sha256:<digest>）完成导入
+ * 返回 {ok:bool, log}
  */
 ipcMain.handle('importModel', async (_event, payload) => {
-  let modelfilePath = null;
   try {
     const args = payload || {};
     const name = typeof args.name === 'string' ? args.name.trim() : '';
@@ -398,30 +478,44 @@ ipcMain.handle('importModel', async (_event, payload) => {
       return { ok: false, error: 'Ollama 未运行，请先点击"启动 Ollama"' };
     }
 
-    // 5) 写临时 Modelfile：内容只有一行 FROM <绝对路径>
-    modelfilePath = path.join(os.tmpdir(), 'Modelfile-botconsole-' + Date.now());
-    fs.writeFileSync(modelfilePath, 'FROM ' + modelPath, 'utf8');
-
-    // 6) 执行 ollama create（同步等待，最长 10 分钟）
-    const r = spawnSync(OLLAMA_EXE, ['create', name, '-f', modelfilePath], {
-      timeout: 600000,
-      encoding: 'utf8',
-      windowsHide: true,
-      creationFlags: CREATE_NO_WINDOW,
+    // 5) 计算 SHA256（流式，防大文件爆内存）
+    const crypto = require('crypto');
+    const digest = await new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const rs = fs.createReadStream(modelPath);
+      rs.on('data', (c) => hash.update(c));
+      rs.on('error', reject);
+      rs.on('end', () => resolve(hash.digest('hex')));
     });
-    const exitCode = (r.status === null || r.status === undefined) ? -1 : r.status;
-    let log = [String(r.stdout || ''), String(r.stderr || '')].filter(Boolean).join('\n').trim();
-    if (r.error) log += (log ? '\n' : '') + String(r.error.message || r.error);
-    if (!log) log = exitCode === 0 ? '导入成功' : '导入失败（退出码 ' + exitCode + '）';
 
-    return { ok: exitCode === 0, log };
+    // 6) 纯 HTTP 导入：上传 blob → create 引用 digest（不用 child_process，无命令执行面）
+    let createOut = '';
+    const up = await fetch(OLLAMA_API + '/api/blobs/sha256:' + digest, {
+      method: 'POST',
+      body: fs.createReadStream(modelPath),
+      duplex: 'half',
+    });
+    if (!up.ok) {
+      return { ok: false, error: '上传模型文件到 Ollama 失败（HTTP ' + up.status + '）' };
+    }
+    const cr = await fetch(OLLAMA_API + '/api/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: name, files: { gguf: 'sha256:' + digest }, stream: false }),
+    });
+    const crText = await cr.text();
+    createOut = crText.slice(0, 2000);
+    let ok = cr.ok;
+    try {
+      const j = JSON.parse(crText);
+      if (j.error) { ok = false; createOut = j.error; }
+      if (j.status === 'success') ok = true;
+    } catch (err) { /* 非 JSON 响应按 cr.ok 判定 */ }
+    const log = createOut || (ok ? '导入成功' : '导入失败');
+
+    return { ok, log };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
-  } finally {
-    // 清理临时 Modelfile（失败也不影响结果）
-    if (modelfilePath) {
-      try { fs.unlinkSync(modelfilePath); } catch (err) { /* 忽略 */ }
-    }
   }
 });
 
@@ -488,7 +582,7 @@ ipcMain.handle('getLogs', async (_event, lines) => {
  */
 ipcMain.handle('startOllama', async () => {
   try {
-    if (getProcessNames(['ollama']).has('ollama')) {
+    if ((await getProcessNamesAsync(['ollama'])).has('ollama')) {
       return { ok: true, alreadyRunning: true };
     }
     if (!fs.existsSync(OLLAMA_EXE)) {
@@ -503,6 +597,113 @@ ipcMain.handle('startOllama', async () => {
     });
     child.unref();
     return { ok: true, alreadyRunning: false };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// ==================== 扩展功能：测试对话 / 自启开关 / 记忆管理 ====================
+
+function stripThinkMain(text) {
+  return String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\|(?:im_end|im_start|endoftext|eot_id|channel\|)[^>]*\|>/gi, '')
+    .replace(/\n?\s*(?:user|assistant|system)\s*\n[\s\S]*$/i, '')
+    .trim();
+}
+
+// 测试对话：读 config 组装当前人设，直接调 Ollama（不进微信）
+ipcMain.handle('testChat', async (_event, text) => {
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    const pname = config.defaultPersona || '鹅王';
+    const roleCard = config.personas?.[pname] || config.persona || '';
+    const base = config.personaBase || '';
+    const sys = (roleCard + (base ? '\n\n' + base : '')).slice(0, 4000)
+      + '\n\n当前是与控制台的测试对话（不在微信里），直接按人设回复一两句话。';
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), (config.ai?.timeoutSeconds || 180) * 1000);
+    const res = await fetch(OLLAMA_API + '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.ai.model,
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: String(text || '').slice(0, 2000) }],
+        stream: false,
+        think: false,
+        options: { temperature: config.ai?.temperature ?? 0.8 },
+      }),
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, error: 'Ollama HTTP ' + res.status };
+    const data = await res.json();
+    const reply = stripThinkMain(data?.message?.content);
+    if (!reply) return { ok: false, error: '模型返回空回复' };
+    return { ok: true, reply };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 开机自启（HKCU Run 键）
+ipcMain.handle('getAutostart', async () => {
+  const out = await runPowerShell(
+    "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -ErrorAction SilentlyContinue).WechatyBotSupervisor",
+    10000
+  );
+  return { ok: true, enabled: Boolean(out && out.trim()) };
+});
+
+ipcMain.handle('setAutostart', async (_event, enable) => {
+  const key = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+  const val = 'wscript.exe "E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs"';
+  const cmd = enable
+    ? `Set-ItemProperty -Path '${key}' -Name 'WechatyBotSupervisor' -Value '${val}'`
+    : `Remove-ItemProperty -Path '${key}' -Name 'WechatyBotSupervisor' -ErrorAction SilentlyContinue`;
+  await runPowerShell(cmd, 10000);
+  return { ok: true, enabled: Boolean(enable) };
+});
+
+// 长期记忆列表（memories 目录递归，只读 JSON 元信息）
+ipcMain.handle('listMemories', async () => {
+  try {
+    const root = path.resolve('E:\\wechaty-bot\\memories');
+    const list = [];
+    const walk = (dir, rel) => {
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, f.name);
+        const r = rel ? rel + '/' + f.name : f.name;
+        if (f.isDirectory()) walk(full, r);
+        else if (f.name.endsWith('.json')) {
+          try {
+            const j = JSON.parse(fs.readFileSync(full, 'utf8'));
+            list.push({ rel: r, facts: (j.facts || []).length, updatedAt: j.updatedAt || '' });
+          } catch (err) { list.push({ rel: r, facts: -1, updatedAt: '' }); }
+        }
+      }
+    };
+    if (fs.existsSync(root)) walk(root, '');
+    return { ok: true, list };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 删除一条记忆档案：双保险（rel 先过白名单正则，再 resolve 严格边界校验）
+ipcMain.handle('deleteMemory', async (_event, rel) => {
+  try {
+    const relStr = String(rel || '');
+    if (!/^[\w][\w\-./]{0,120}\.json$/i.test(relStr) || relStr.includes('..')) {
+      return { ok: false, error: '非法路径' };
+    }
+    const root = path.resolve('E:\\wechaty-bot\\memories');
+    const target = path.resolve(root, relStr);
+    if (target !== root && target.startsWith(root + path.sep) && fs.existsSync(target)) {
+      fs.unlinkSync(target);
+      return { ok: true };
+    }
+    return { ok: false, error: '非法路径' };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }

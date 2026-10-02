@@ -72,6 +72,11 @@ bot
 
 async function main() {
   logger.info(`启动 Wechaty 机器人，puppet=${puppet}，AI 模型=${config.ai.model}（${config.ai.baseUrl}）`)
+  // 写 PID 文件：UI/看门狗零开销检测机器人进程（避免每几秒跑一次 PowerShell 查询）
+  try {
+    fs.mkdirSync(path.join(__dirname, '..', 'state'), { recursive: true })
+    fs.writeFileSync(path.join(__dirname, '..', 'state', 'bot.pid'), String(process.pid))
+  } catch {}
   await bot.start()
   logger.info('机器人已启动。请确保微信 3.9.10.27 客户端已在本机登录。')
 }
@@ -81,6 +86,7 @@ process.on('SIGINT', async () => {
   try {
     await bot.stop()
   } catch {}
+  try { fs.unlinkSync(path.join(__dirname, '..', 'state', 'bot.pid')) } catch {}
   process.exit(0)
 })
 
