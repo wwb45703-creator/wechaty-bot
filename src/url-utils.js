@@ -75,8 +75,8 @@ export async function validateExternalUrl(urlStr) {
   return { ok: true, url }
 }
 
-/** 去掉 HTML 标签/脚本，压缩空白，提取可读文本 */
-function htmlToText(html) {
+/** 去掉 HTML 标签/脚本，压缩空白，提取可读文本（reach/browser 层也复用） */
+export function htmlToText(html) {
   return String(html || '')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -88,8 +88,8 @@ function htmlToText(html) {
     .trim()
 }
 
-/** 提取 <title> 与常用 meta 描述 */
-function extractMeta(html) {
+/** 提取 <title> 与常用 meta 描述（reach/browser 层也复用） */
+export function extractMeta(html) {
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]
   const desc =
     (html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']/i) || [])[1] ||

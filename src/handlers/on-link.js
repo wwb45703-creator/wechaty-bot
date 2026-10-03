@@ -14,7 +14,8 @@ import { chat } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
 import { getActivePersonaName } from '../persona-commands.js'
-import { extractFirstUrl, fetchPageText } from '../url-utils.js'
+import { extractFirstUrl } from '../url-utils.js'
+import { fetchRich } from '../reach/index.js'
 
 function linksConf() {
   return config.links || {}
@@ -60,8 +61,8 @@ export async function handleLinkMessage(msg, room, text) {
 
   logger.info(`[链接] ${topic ? `群[${topic}] ${name}` : name} 分享链接: ${url.slice(0, 80)}`)
 
-  // 抓取（耗时可能 20 秒，先占位提示不如静默——实测群友更希望直接出结果）
-  const page = await fetchPageText(url, {
+  // 抓取（分层降级链：平台API→原生→Scrapling→Jina→浏览器，可能耗时较久，静默等结果）
+  const page = await fetchRich(url, {
     timeoutMs: lc.timeoutSeconds ? lc.timeoutSeconds * 1000 : 20000,
     maxBytes: lc.maxBytes || 400000,
     summaryChars: lc.summaryChars || 1200,
@@ -75,7 +76,11 @@ export async function handleLinkMessage(msg, room, text) {
     : `当前是微信私聊，好友 ${name} 刚给你分享了这个链接。`
   let systemExtra
   let userText
-  if (page.ok) {
+  if (page.ok && page.kind === 'video') {
+    const summary = page.summary.length > (lc.summaryChars || 1200) ? page.summary.slice(0, lc.summaryChars || 1200) + '……' : page.summary
+    systemExtra = `${scene}\n\n【视频信息】(来源: ${page.source})\n${summary}\n\n你的任务：基于上面的信息，用一两句话说说这是个什么视频、值不值得看（有字幕内容就顺带剧透一点内容）。保持你的说话风格，不要开场白和说明。`
+    userText = '我发的这个视频是啥？'
+  } else if (page.ok) {
     const summary = page.summary.length > (lc.summaryChars || 1200) ? page.summary.slice(0, lc.summaryChars || 1200) + '……' : page.summary
     systemExtra = `${scene}\n\n【网页内容】\n${summary}\n\n你的任务：基于上面的网页内容，输出一两句话的点评或吐槽。只输出点评本身，不要任何开场白、说明或角色扮演。`
     userText = '点评一下我刚分享的这个链接。'
@@ -109,5 +114,5 @@ export async function handleLinkMessage(msg, room, text) {
   }, bubbles, config.ai?.replyDelaySeconds)
 
   recordReply(key, 0)
-  logger.info(`[链接] 已回复 ${topic ? `群[${topic}] ${name}` : name}（ok=${page.ok}）`)
+  logger.info(`[链接] 已回复 ${topic ? `群[${topic}] ${name}` : name}（ok=${page.ok}${page.source ? `,source=${page.source}` : ''}）`)
 }

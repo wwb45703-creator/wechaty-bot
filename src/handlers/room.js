@@ -21,6 +21,24 @@ function cleanMention(text, botName) {
   return t.replace(/@\S+\s?/g, '').trim() || text.trim()
 }
 
+/**
+ * 群消息触发判定（供文本回复与搜索分支共用）：
+ * mode=all 恒触发；mention 模式看 @机器人昵称 / mentionSelf / 唤醒词
+ * （puppet-xp 不回传 mention 列表，用"文本含 @机器人昵称"做主判定）。
+ * 返回 { triggered, selfName }——selfName 供回复时剥离 @ 叠加。
+ */
+export async function checkRoomTrigger(msg, text, rc) {
+  const mode = rc?.mode ?? config.defaultRoomMode ?? 'mention'
+  const wakeWords = rc?.wakeWords ?? config.defaultWakeWords ?? []
+  const w = msg.wechaty
+  const selfName = w?.currentUser?.name?.() || w?.userSelf?.()?.name?.() || ''
+  if (mode === 'all') return { triggered: true, selfName }
+  const atMe = selfName && text.includes(`@${selfName}`)
+  const mentioned = atMe || (await msg.mentionSelf().catch(() => false))
+  const wake = wakeWords.some((x) => x && text.includes(x))
+  return { triggered: Boolean(mentioned) || wake, selfName }
+}
+
 export async function handleRoomMessage(msg, room) {
   const text = msg.text().trim()
   if (!text) return
@@ -42,22 +60,7 @@ export async function handleRoomMessage(msg, room) {
     return
   }
 
-  const mode = rc?.mode ?? config.defaultRoomMode ?? 'mention'
-  const wakeWords = rc?.wakeWords ?? config.defaultWakeWords ?? []
-
-  let selfName = '' // 机器人昵称（函数级：@ 剥离和触发判定共用）
-  let triggered = false
-  if (mode === 'all') {
-    triggered = true
-  } else {
-    // puppet-xp 不回传 mention 列表，这里用"文本包含 @机器人昵称"做主判定
-    const w = msg.wechaty
-    selfName = w?.currentUser?.name?.() || w?.userSelf?.()?.name?.() || ''
-    const atMe = selfName && text.includes(`@${selfName}`)
-    const mentioned = atMe || (await msg.mentionSelf().catch(() => false))
-    const wake = wakeWords.some((w) => w && text.includes(w))
-    triggered = Boolean(mentioned) || wake
-  }
+  const { triggered, selfName } = await checkRoomTrigger(msg, text, rc)
   if (!triggered) return
 
   const key = `room:${topic}`

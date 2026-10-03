@@ -69,5 +69,37 @@
     "cooldownSeconds": 10,
     "timeoutSeconds": 90,
     "keepAlive": "5m"
+  },
+  "links": {
+    "enabled": true,
+    "cooldownSeconds": 30,
+    "timeoutSeconds": 20,
+    "maxBytes": 400000,
+    "summaryChars": 1200
+  },
+  "reach": {
+    "enabled": true,
+    "search": {
+      "enabled": true,
+      "triggers": ["帮我搜索一下", "帮我搜一下", "帮我搜", "搜索一下", "搜一下", "搜索"],
+      "numResults": 6,
+      "cooldownSeconds": 60,
+      "dailyLimit": 20
+    },
+    "video": {
+      "enabled": true,
+      "subtitles": true
+    },
+    "jina": {
+      "enabled": false
+    },
+    "browser": {
+      "enabled": true
+    },
+    "scrapling": {
+      "enabled": true,
+      "pythonBin": "python"
+    },
+    "binPaths": []
   }
 }

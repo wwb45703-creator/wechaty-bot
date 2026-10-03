@@ -5,6 +5,8 @@ import { handlePrivateMessage } from './private.js'
 import { handleRoomMessage } from './room.js'
 import { handleImageMessage, isVisionEnabled } from './on-image.js'
 import { handleLinkMessage, hasProcessableLink } from './on-link.js'
+import { handleSearchMessage, detectSearchIntent } from './search.js'
+import { checkRoomTrigger } from './room.js'
 
 /**
  * 消息总入口：只处理文本消息，按私聊/群聊分流
@@ -36,6 +38,27 @@ export async function onMessage(msg) {
     const isPlainText = type === types.Message.Text ||
       (type === types.Message.Unknown && !/^\s*</.test(text))
     if (!isPlainText) return
+
+    // 聊天搜索：触发词开头（"搜一下 XX"）；群聊需满足与文本一致的触发条件（@/唤醒词）
+    // 放在链接分支之前，防止含 URL 的搜索词被链接处理截走
+    const searchQuery = detectSearchIntent(text)
+    if (searchQuery) {
+      let admitted
+      if (room) {
+        const topic = await room.topic().catch(() => '')
+        const rc = findRoomConfig(topic)
+        admitted = Boolean(rc) && (await checkRoomTrigger(msg, text, rc)).triggered
+      } else {
+        const t0 = msg.talker()
+        const wl = config.private?.whitelist || []
+        admitted = wl.length === 0 || wl.includes(t0.name()) || wl.includes(await t0.alias().catch(() => ''))
+      }
+      if (admitted) {
+        await handleSearchMessage(msg, room, searchQuery)
+        return
+      }
+      logger.info(`[搜索] 未准入，落回普通聊天: ${String(text).slice(0, 40)}`)
+    }
 
     // 链接识别：消息含 URL 时优先走抓取回复
     // 准入检查（与文本一致）：私聊白名单、群聊仅 config.rooms 已登记的群
