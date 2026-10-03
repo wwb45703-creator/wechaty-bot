@@ -1,4 +1,4 @@
 registry=https://registry.npmmirror.com
-cache=D:\npm-cache\npm
+cache=E:\npm-cache\npm
 audit=false
 fund=false

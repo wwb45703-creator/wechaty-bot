@@ -6,7 +6,7 @@ import { WeChatSidecar } from '../node_modules/wechaty-puppet-xp/dist/esm/src/we
 import fs from 'node:fs'
 
 const target = process.argv[2] || 'filehelper'
-const img = process.argv[3] || 'D:/wechaty-bot/stickers/通用/test.gif'
+const img = process.argv[3] || 'E:/wechaty-bot/stickers/通用/test.gif'
 
 if (!fs.existsSync(img)) {
   console.error('测试图片不存在:', img)

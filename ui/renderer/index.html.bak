@@ -133,7 +133,7 @@
         <div class="card">
           <div class="card-title">关于</div>
           <div class="about-line">微信机器人控制台 v1.1.0</div>
-          <div class="about-line">本地项目路径：D:\wechaty-bot</div>
+          <div class="about-line">本地项目路径：E:\wechaty-bot</div>
           <div class="about-line">AI 推理：本地 Ollama（聊天数据不出电脑）</div>
           <div class="about-line">字体：MiSans（小米，免费商用）</div>
         </div>

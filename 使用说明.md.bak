@@ -21,7 +21,7 @@
 ### 启动前检查（机器人没反应时按顺序查）
 1. 微信客户端（3.9.10.27）已登录
 2. Ollama 在运行：浏览器打开 `http://127.0.0.1:11434` 显示 "Ollama is running"
-3. 火绒信任区里有 `D:\wechaty-bot` 目录
+3. 火绒信任区里有 `E:\wechaty-bot` 目录
 
 ---
 
@@ -103,4 +103,4 @@
 
 - 每次加功能后自动提交到 GitHub 私有仓：`github.com/wwb45703-creator/wechaty-bot`
 - 手动推送：`node scripts\git-api-push.mjs "备注"`
-- 回滚：找管理员（AI）或用 `D:\wechaty-bot-backups\v1-stable-2026-09-27\` 备份
+- 回滚：找管理员（AI）或用 `E:\wechaty-bot-backups\v1-stable-2026-09-27\` 备份

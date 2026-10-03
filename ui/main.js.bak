@@ -18,10 +18,10 @@ const fs = require('fs');
 const path = require('path');
 
 // ==================== 路径常量 ====================
-const PROJECT_ROOT = 'D:\\wechaty-bot';                              // 项目根（bot 的 cwd）
-const FLAG_FILE = 'D:\\wechaty-bot\\state\\bot-disabled.flag';       // 停用标记：存在 = 禁止 bot 运行
-const CONFIG_FILE = 'D:\\wechaty-bot\\config.json';                  // bot 配置（含 ai.model）
-const OLLAMA_EXE = 'D:\\Ollama\\ollama.exe';                         // Ollama 可执行文件
+const PROJECT_ROOT = 'E:\\wechaty-bot';                              // 项目根（bot 的 cwd）
+const FLAG_FILE = 'E:\\wechaty-bot\\state\\bot-disabled.flag';       // 停用标记：存在 = 禁止 bot 运行
+const CONFIG_FILE = 'E:\\wechaty-bot\\config.json';                  // bot 配置（含 ai.model）
+const OLLAMA_EXE = 'E:\\Ollama\\ollama.exe';                         // Ollama 可执行文件
 const OLLAMA_API = 'http://127.0.0.1:11434';                         // Ollama API 地址
 
 // CREATE_NO_WINDOW：从系统层面禁止为子进程创建控制台窗口（windowsHide 偶有闪现，此标志根治）
@@ -48,7 +48,7 @@ async function fetchWithTimeout(url, timeoutMs) {
  * 查找 bot 进程 PID —— 纯零子进程方案：读 bot 写的 state/bot.pid 探活。
  * （不再回退 PowerShell——任何控制台程序 spawn 在 Win11 默认终端下都会闪窗）
  */
-const BOT_PID_FILE = 'D:\\wechaty-bot\\state\\bot.pid';
+const BOT_PID_FILE = 'E:\\wechaty-bot\\state\\bot.pid';
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
@@ -154,7 +154,7 @@ async function doStartBot() {
   }
 
   // 步骤 3：零闪窗启动（wscript 静默跑一轮 supervisor 体检：拉起 bot + ollama）
-  spawn('wscript.exe', ['D:\\wechaty-bot\\scripts\\watchdog-launcher.vbs'], {
+  spawn('wscript.exe', ['E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs'], {
     windowsHide: true,
     creationFlags: CREATE_NO_WINDOW,
     detached: true,
@@ -363,7 +363,7 @@ ipcMain.handle('importModel', async (_event, payload) => {
 
     // 4) Ollama 环境检查
     if (!fs.existsSync(OLLAMA_EXE)) {
-      return { ok: false, error: '未找到 Ollama：D:\\Ollama\\ollama.exe' };
+      return { ok: false, error: '未找到 Ollama：E:\\Ollama\\ollama.exe' };
     }
     let serverOk = false;
     try {
@@ -479,7 +479,7 @@ ipcMain.handle('getLogs', async (_event, lines) => {
 ipcMain.handle('startOllama', async () => {
   try {
     // 清除独立停用标记（看门狗恢复对 Ollama 的守护）
-    const ollamaFlag = 'D:\\wechaty-bot\\state\\ollama-disabled.flag';
+    const ollamaFlag = 'E:\\wechaty-bot\\state\\ollama-disabled.flag';
     if (fs.existsSync(ollamaFlag)) fs.unlinkSync(ollamaFlag);
 
     // 若 Ollama API 已可用则幂等返回
@@ -490,7 +490,7 @@ ipcMain.handle('startOllama', async () => {
 
     // 零闪窗启动：交给 VBS（wscript 是 GUI 子系统，无控制台窗口）静默执行
     // VBS 内容 = 隐藏运行 ollama serve
-    const launcher = 'D:\\wechaty-bot\\scripts\\start-ollama.vbs';
+    const launcher = 'E:\\wechaty-bot\\scripts\\start-ollama.vbs';
     spawn('wscript.exe', [launcher], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
 
     // 等 Ollama 端口就绪（最多 15 秒），让 UI 状态及时刷新
@@ -557,7 +557,7 @@ const STARTUP_DIR = path.join(process.env.APPDATA || '', 'Microsoft\\Windows\\St
 const AUTOSTART_VBS = path.join(STARTUP_DIR, 'wechaty-bot-autostart.vbs');
 const AUTOSTART_VBS_CONTENT =
   "' Wechaty bot autostart: hidden watchdog round (starts bot + ollama)\r\n" +
-  'CreateObject("WScript.Shell").Run "wscript.exe ""D:\\wechaty-bot\\scripts\\watchdog-launcher.vbs""", 0, False';
+  'CreateObject("WScript.Shell").Run "wscript.exe ""E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs""", 0, False';
 
 ipcMain.handle('getAutostart', async () => {
   return { ok: true, enabled: fs.existsSync(AUTOSTART_VBS) };
@@ -580,7 +580,7 @@ ipcMain.handle('setAutostart', async (_event, enable) => {
 // 长期记忆列表（memories 目录递归，只读 JSON 元信息）
 ipcMain.handle('listMemories', async () => {
   try {
-    const root = path.resolve('D:\\wechaty-bot\\memories');
+    const root = path.resolve('E:\\wechaty-bot\\memories');
     const list = [];
     const walk = (dir, rel) => {
       for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -609,7 +609,7 @@ ipcMain.handle('deleteMemory', async (_event, rel) => {
     if (!/^[\w][\w\-./]{0,120}\.json$/i.test(relStr) || relStr.includes('..')) {
       return { ok: false, error: '非法路径' };
     }
-    const root = path.resolve('D:\\wechaty-bot\\memories');
+    const root = path.resolve('E:\\wechaty-bot\\memories');
     const target = path.resolve(root, relStr);
     if (target !== root && target.startsWith(root + path.sep) && fs.existsSync(target)) {
       fs.unlinkSync(target);
@@ -625,11 +625,11 @@ ipcMain.handle('deleteMemory', async (_event, rel) => {
 // 注意：关闭后机器人将无法生成回复（视觉/文本都依赖 Ollama）。
 ipcMain.handle('stopOllama', async () => {
   try {
-    const ollamaFlag = 'D:\\wechaty-bot\\state\\ollama-disabled.flag';
+    const ollamaFlag = 'E:\\wechaty-bot\\state\\ollama-disabled.flag';
     fs.mkdirSync(path.dirname(ollamaFlag), { recursive: true });
     fs.writeFileSync(ollamaFlag, '');
     // taskkill 由 VBS（GUI 子系统，无控制台窗口）静默执行——根治闪窗
-    const child = spawn('wscript.exe', ['D:\\wechaty-bot\\scripts\\stop-ollama.vbs'], {
+    const child = spawn('wscript.exe', ['E:\\wechaty-bot\\scripts\\stop-ollama.vbs'], {
       windowsHide: true,
       creationFlags: CREATE_NO_WINDOW,
     });

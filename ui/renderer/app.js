@@ -97,9 +97,7 @@ function renderStatus(st) {
   const hint = $('home-hint');
   if (st.flag) hint.textContent = '机器人处于停用保护状态，点上方按钮重新启动。';
   else if (!oOk) hint.textContent = 'Ollama 未运行，机器人无法生成回复——可点左侧卡片按钮启动。';
-  else if (!wOk) hint.textContent = '微信未运行：请打开微信并登录机器人账号。';
-  else if (!st.botRunning) hint.textContent = '一切就绪，点上方大按钮启动机器人。';
-  else hint.textContent = '';
+  else hint.textContent = '请保持微信客户端已登录（登录状态以微信窗口为准）。';
 }
 
 /* ==================== 启停按钮 ==================== */

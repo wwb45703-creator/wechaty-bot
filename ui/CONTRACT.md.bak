@@ -14,7 +14,7 @@
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `flag` | `boolean` | 停用标记 `D:\wechaty-bot\state\bot-disabled.flag` 是否存在。`true` = 机器人处于"已停用"保护状态（通常是刚点过"停止"），`startBot` 会自动清除它 |
+| `flag` | `boolean` | 停用标记 `E:\wechaty-bot\state\bot-disabled.flag` 是否存在。`true` = 机器人处于"已停用"保护状态（通常是刚点过"停止"），`startBot` 会自动清除它 |
 | `botRunning` | `boolean` | bot（node src/index.js）进程是否在运行。判定方式：PowerShell 查 `Win32_Process`，**只匹配命令行含 `src[/\]index.js` 的 node 进程**，绝不按进程名判断 |
 | `botPid` | `number \| null` | bot 进程 PID；未运行时为 `null` |
 | `ollamaRunning` | `boolean` | Ollama 是否可用：API（`http://127.0.0.1:11434`，2 秒超时）可达 **或** `ollama.exe` 进程存在。注意：进程刚拉起、API 还没就绪时也会是 `true`，模型列表是否真正可用以 `getModels` 结果为准 |
@@ -51,7 +51,7 @@
 
 1. 若停用标记 `state/bot-disabled.flag` 存在 → 先删除；
 2. 防重复：若检测到 bot 已在运行 → `{ ok: false, error: '机器人已在运行（PID xxx）' }`，不会重复拉起；
-3. 用便携 Node（`runtime\node18\node.exe`，不存在则回退 PATH 中的 `node`）以 **detached** 方式启动 `src/index.js`（cwd = `D:\wechaty-bot`）；
+3. 用便携 Node（`runtime\node18\node.exe`，不存在则回退 PATH 中的 `node`）以 **detached** 方式启动 `src/index.js`（cwd = `E:\wechaty-bot`）；
 4. stdout / stderr 追加写入 `logs\bot-console.log`，stdin 关闭，不弹控制台黑窗；
 5. 返回新进程 `{ ok: true, pid }`。
 
@@ -85,7 +85,7 @@
 - `name`：`/^[a-z0-9][a-z0-9._:-]{0,61}$/i`（字母/数字开头，可含 `. _ : -`，最长 61 位）；
 - `path`：必须以 `.gguf` 结尾，否则提示 **"需先用 llama.cpp 的 convert_hf_to_gguf.py 转换"**；
 - 文件必须存在，且前 4 字节为 `GGUF`（防选错文件）；
-- `D:\Ollama\ollama.exe` 必须存在，且 Ollama 服务必须在运行。
+- `E:\Ollama\ollama.exe` 必须存在，且 Ollama 服务必须在运行。
 
 通过后：在临时目录写一行式 Modelfile（`FROM <gguf绝对路径>`）→ `ollama create <name> -f <modelfile>` → 返回 `{ ok: 退出码===0, log: 'stdout+stderr 全文' }`（**UI 应把 log 展示出来**）。临时 Modelfile 用后即删。
 
@@ -97,7 +97,7 @@
 
 ### `botctl.startOllama()` → `{ ok: true, alreadyRunning: boolean }`
 
-- `ollama.exe` 进程不存在时，以 detached 方式启动 `ollama serve`（`D:\Ollama\ollama.exe`）；
+- `ollama.exe` 进程不存在时，以 detached 方式启动 `ollama serve`（`E:\Ollama\ollama.exe`）；
 - 已在运行则直接成功（幂等，`alreadyRunning: true`）。
 
 ### `botctl.pickGgufFile()` → `string | null`  ⚠️ 特殊约定

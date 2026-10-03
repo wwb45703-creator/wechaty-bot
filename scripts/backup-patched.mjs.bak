@@ -2,8 +2,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-const root = 'D:/wechaty-bot'
-const backup = 'D:/wechaty-bot-backups/v1-stable-2026-09-27/patched-node-modules/wechaty-puppet-xp'
+const root = 'E:/wechaty-bot'
+const backup = 'E:/wechaty-bot-backups/v1-stable-2026-09-27/patched-node-modules/wechaty-puppet-xp'
 
 const files = [
   ['dist/esm/src/puppet-xp.js', 'dist/esm/src/puppet-xp.js'],

@@ -3,7 +3,7 @@
 #   1) wechaty bot (node src/index.js)
 #   2) local Ollama AI service (serve, port 11434)
 # Kill switch: if state\bot-disabled.flag exists, do NOTHING and exit.
-# Log: D:\wechaty-bot\logs\supervisor.log
+# Log: E:\wechaty-bot\logs\supervisor.log
 # NOTE: keep this file ASCII-only (PowerShell 5.1 reads BOM-less files as ANSI;
 #       Chinese comments here previously broke parsing and killed the script)
 
@@ -11,9 +11,9 @@ param(
     [switch]$Once
 )
 
-$botDir = 'D:\wechaty-bot'
+$botDir = 'E:\wechaty-bot'
 $nodeExe = Join-Path $botDir 'runtime\node18\node.exe'
-$ollamaExe = 'D:\Ollama\ollama.exe'
+$ollamaExe = 'E:\Ollama\ollama.exe'
 $consoleLog = Join-Path $botDir 'logs\bot-console.log'
 $errLog = Join-Path $botDir 'logs\bot-console.err.log'
 $ollamaLog = Join-Path $botDir 'logs\ollama.log'
@@ -78,7 +78,7 @@ function Start-Guarded {
         $ollamaProc = Get-Process -Name 'ollama' -ErrorAction SilentlyContinue
         if (-not $ollamaProc) {
             Log "ollama not running, starting..."
-            $op = Start-HiddenProcess $ollamaExe 'serve' 'D:\Ollama'
+            $op = Start-HiddenProcess $ollamaExe 'serve' 'E:\Ollama'
             if ($op) { Log "ollama started, pid=$($op.Id)" }
         }
     }

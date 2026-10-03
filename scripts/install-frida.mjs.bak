@@ -13,7 +13,7 @@ const args = [
   '--target', process.versions.node,
   '--arch', 'x64',
   '--platform', 'win32',
-  '--local-prebuilds', 'D:/wechaty-bot/prebuilds',
+  '--local-prebuilds', 'E:/wechaty-bot/prebuilds',
   '--verbose',
 ]
 

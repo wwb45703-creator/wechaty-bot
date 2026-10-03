@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $src = 'C:\Program Files\Tencent\WeChat'
-$dst = 'D:\Apps\WeChat3.9'
+$dst = 'E:\Apps\WeChat3.9'
 
 if (-not (Test-Path "$src\WeChat.exe")) {
     Write-Output "SKIP: $src\WeChat.exe not found"

@@ -56,10 +56,10 @@
 
 | 组件 | 状态 | 位置 |
 |---|---|---|
-| Node.js 18（便携版） | ✅ 已装 | `D:\wechaty-bot\runtime\node18\` |
-| npm 依赖（wechaty + puppet-xp + node-cron） | ✅ 已装 | `D:\wechaty-bot\node_modules\` |
-| Ollama + gpt-oss:20b 模型 | ✅ 已装 | `D:\Ollama`，模型在 `D:\OllamaModels` |
-| 微信 3.9.10.27 | ⬜ 需要安装 | 安装包在 `D:\wechaty-bot\downloads\` |
+| Node.js 18（便携版） | ✅ 已装 | `E:\wechaty-bot\runtime\node18\` |
+| npm 依赖（wechaty + puppet-xp + node-cron） | ✅ 已装 | `E:\wechaty-bot\node_modules\` |
+| Ollama + gpt-oss:20b 模型 | ✅ 已装 | `E:\Ollama`，模型在 `E:\OllamaModels` |
+| 微信 3.9.10.27 | ⬜ 需要安装 | 安装包在 `E:\wechaty-bot\downloads\` |
 
 > **为什么必须用微信 3.9.10.27？** 免费本地方案 wechaty-puppet-xp 通过 Frida 注入微信桌面客户端实现，只适配特定版本。当前版本对应关系：puppet-xp 2.1.1 ↔ 微信 3.9.10.27。**请勿让微信自动升级**（登录后进入 设置→关于微信 关闭自动更新；升级后机器人会失效）。
 
@@ -67,12 +67,12 @@
 
 1. **安装微信 3.9.10.27**
    - 双击 `downloads\WeChatSetup-3.9.10.27.exe`
-   - 安装界面把路径改到 **E 盘**（如 `D:\Apps\WeChat`），别装 C 盘
+   - 安装界面把路径改到 **E 盘**（如 `E:\Apps\WeChat`），别装 C 盘
    - 登录后：设置 → 关于微信 → 关闭"有更新时自动升级"
    - （可选）设置 → 文件管理 → 把存储位置改到 E 盘
 2. **火绒添加信任区**（重要，否则注入会被拦截）
    - 打开火绒 → 病毒查杀 → 信任区
-   - 添加目录：`D:\wechaty-bot`（整个目录）和微信安装目录（如 `D:\Apps\WeChat`）
+   - 添加目录：`E:\wechaty-bot`（整个目录）和微信安装目录（如 `E:\Apps\WeChat`）
 3. **确认 Ollama 在运行**
    - 开始菜单启动 Ollama（或已开机自启）
    - 验证：浏览器打开 `http://127.0.0.1:11434` 应显示 `Ollama is running`
@@ -185,7 +185,7 @@ AI 大脑        src/ai.js（Ollama /api/chat，带会话记忆，UTF-8）
 
 ## 八、备份与补丁
 
-- **v1 稳定版备份**：`D:\wechaty-bot-backups\v1-stable-2026-09-27\`（含源码、config、已打补丁的 puppet-xp.js、PATCHES.md 补丁清单）。出问题把备份内容复制回 `D:\wechaty-bot` 即回滚。
+- **v1 稳定版备份**：`E:\wechaty-bot-backups\v1-stable-2026-09-27\`（含源码、config、已打补丁的 puppet-xp.js、PATCHES.md 补丁清单）。出问题把备份内容复制回 `E:\wechaty-bot` 即回滚。
 - **node_modules 里的 4 个补丁**（重装依赖后会丢失，需按 PATCHES.md 重打）：
   1. 私聊消息 XML 空值保护（onHookRecvMsg case 1）
   2. appmsg 类型解析空值保护（case 49）

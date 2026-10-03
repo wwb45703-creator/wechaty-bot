@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
 
-const dir = 'D:/wechaty-bot/stickers/通用'
+const dir = 'E:/wechaty-bot/stickers/通用'
 fs.mkdirSync(dir, { recursive: true })
 
 const W = 64, H = 64
