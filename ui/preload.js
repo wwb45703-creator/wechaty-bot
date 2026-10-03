@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld('botctl', {
   // 启动 Ollama 服务（幂等）→ {ok:true, alreadyRunning} | {ok:false, error}
   startOllama: (...args) => ipcRenderer.invoke('startOllama', ...args),
 
+  // 完全关闭 Ollama（独立开关 + 杀全部 ollama 进程）→ {ok}
+  stopOllama: (...args) => ipcRenderer.invoke('stopOllama', ...args),
+
   // 弹文件选择框选 .gguf → 选中路径字符串 | null（取消）；对话框异常时 {ok:false, error}
   pickGgufFile: (...args) => ipcRenderer.invoke('pickGgufFile', ...args),
 

@@ -15,40 +15,17 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 // ==================== 路径常量 ====================
 const PROJECT_ROOT = 'E:\\wechaty-bot';                              // 项目根（bot 的 cwd）
-const PORTABLE_NODE = 'E:\\wechaty-bot\\runtime\\node18\\node.exe';  // 便携 Node 18
-const BOT_ENTRY = 'src/index.js';                                    // bot 入口（相对项目根）
 const FLAG_FILE = 'E:\\wechaty-bot\\state\\bot-disabled.flag';       // 停用标记：存在 = 禁止 bot 运行
 const CONFIG_FILE = 'E:\\wechaty-bot\\config.json';                  // bot 配置（含 ai.model）
-const BOT_LOG = 'E:\\wechaty-bot\\logs\\bot-console.log';            // bot 日志（控制台启动的实例追加写入）
 const OLLAMA_EXE = 'E:\\Ollama\\ollama.exe';                         // Ollama 可执行文件
 const OLLAMA_API = 'http://127.0.0.1:11434';                         // Ollama API 地址
 
-/**
- * PowerShell：精确查找 bot 进程。
- * 只匹配命令行中含 src/index.js（兼容 src/index.js 与 src\index.js 两种写法）的 node.exe，
- * 输出第一个匹配进程的 PID；没有匹配则输出为空。
- * 正则 src[/\\]index\.js 中的 \\ 是转义的反斜杠、\. 是转义的点号。
- */
-const PS_FIND_BOT =
-  'Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | ' +
-  "Where-Object { $_.CommandLine -match 'src[/\\\\]index\\.js' } | " +
-  'Select-Object -First 1 -ExpandProperty ProcessId';
-
-/**
- * PowerShell：精确停止 bot 进程（Stop-Process -Id）。
- * 同样只匹配命令行含 src/index.js 的 node.exe，绝不按进程名杀。
- */
-const PS_STOP_BOT =
-  'Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | ' +
-  "Where-Object { $_.CommandLine -match 'src[/\\\\]index\\.js' } | " +
-  'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
-
-// ==================== 通用小工具 ====================
+// CREATE_NO_WINDOW：从系统层面禁止为子进程创建控制台窗口（windowsHide 偶有闪现，此标志根治）
+const CREATE_NO_WINDOW = 0x08000000;
 
 /** 统一提取错误消息，保证返回给渲染层的 error 一定是字符串 */
 function errMessage(err) {
@@ -68,38 +45,8 @@ async function fetchWithTimeout(url, timeoutMs) {
 }
 
 /**
- * 执行一段 PowerShell 命令并返回 stdout 文本。
- * -NoProfile：跳过用户配置，启动更快且不受个人配置干扰
- * windowsHide：不弹出黑色控制台窗口
- */
-// CREATE_NO_WINDOW：从系统层面禁止为子进程创建控制台窗口（windowsHide 偶有闪现，此标志根治）
-const CREATE_NO_WINDOW = 0x08000000;
-
-function runPowerShell(command, timeoutMs) {
-  // 异步执行（绝不阻塞主进程——阻塞会导致整个窗口卡顿无响应）
-  return new Promise((resolve) => {
-    try {
-      const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
-        windowsHide: true,
-        creationFlags: CREATE_NO_WINDOW,
-      });
-      let out = '';
-      let done = false;
-      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(out); } };
-      const timer = setTimeout(finish, timeoutMs || 10000);
-      child.stdout.on('data', (d) => { out += d; });
-      child.on('error', () => resolve(''));
-      child.on('exit', finish);
-    } catch (err) {
-      resolve('');
-    }
-  });
-}
-
-/**
- * 查找 bot 进程 PID —— 零子进程方案：
- * 1) 读 bot 自己写的 state/bot.pid，用 process.kill(pid, 0) 探活；
- * 2) pid 文件不可用时回退一次 PowerShell 查询（异步）。
+ * 查找 bot 进程 PID —— 纯零子进程方案：读 bot 写的 state/bot.pid 探活。
+ * （不再回退 PowerShell——任何控制台程序 spawn 在 Win11 默认终端下都会闪窗）
  */
 const BOT_PID_FILE = 'E:\\wechaty-bot\\state\\bot.pid';
 
@@ -115,29 +62,7 @@ function readPidFile() {
 }
 
 async function findBotPidAsync() {
-  const fromFile = readPidFile();
-  if (fromFile !== null) return fromFile;
-  const out = (await runPowerShell(PS_FIND_BOT, 10000)).trim();
-  if (!out) return null;
-  const pid = parseInt(out, 10);
-  return Number.isInteger(pid) && pid > 0 ? pid : null;
-}
-
-/**
- * 查询一批进程名是否存在（低频使用：WeChat 检测降频 + 异步，不阻塞主进程）。
- * 返回小写进程名集合。
- */
-async function getProcessNamesAsync(names) {
-  const cmd =
-    'Get-Process -Name ' + names.join(',') +
-    ' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName -Unique';
-  const set = new Set();
-  const out = await runPowerShell(cmd, 10000);
-  out.split(/\r?\n/).forEach((line) => {
-    const s = line.trim();
-    if (s) set.add(s.toLowerCase());
-  });
-  return set;
+  return readPidFile();
 }
 
 /** 读取 config.json 里的当前模型名（ai.model）；读不到返回空字符串 */
@@ -178,27 +103,17 @@ async function computeStatus() {
     ollamaRunning = false;
   }
 
-  // 微信检测：异步 + 15 秒缓存（避免每 3 秒跑一次 PowerShell）
-  let wechatRunning = wechatCache.value;
-  if (Date.now() - wechatCache.at > 15000) {
-    const names = await getProcessNamesAsync(['WeChat']);
-    wechatCache.value = names.has('wechat');
-    wechatCache.at = Date.now();
-    wechatRunning = wechatCache.value;
-  }
+  // 微信客户端不再做进程轮询（会闪控制台窗）——由用户自行确认登录状态
+  // （wechatRunning 不返回，renderer 显示"请保持微信登录"提示）
 
   return {
     flag,
     botRunning: botPid !== null,
     botPid,
     ollamaRunning,
-    wechatRunning,
     currentModel: readCurrentModel(),
   };
 }
-
-// 微信进程状态缓存（15 秒刷新一次）
-const wechatCache = { value: false, at: 0 };
 
 /** 把状态广播给所有窗口（renderer 通过 botctl.onStatus(cb) 订阅） */
 function broadcastStatus(status) {
@@ -226,64 +141,45 @@ function startStatusPolling() {
 // ==================== bot 启停（内部实现，供 IPC 与"切模型自动重启"复用） ====================
 
 /**
- * 启动 bot：
- *  1. 若停用标记存在则删除（flag 存在时 bot 自身/守护进程会拒绝运行）
- *  2. 防重复：已在运行则不再拉起
- *  3. 用便携 Node 以 detached 方启动 src/index.js，stdout/stderr 追加写入 bot-console.log
- * 返回 {ok:true, pid} 或 {ok:false, error}
+ * 启动机器人：删停用标记后，交给看门狗 VBS（GUI 子系统，零闪窗）执行一轮体检，
+ * 由 supervisor（.NET CreateNoWindow）拉起机器人 + Ollama。1 分钟内上线。
  */
 async function doStartBot() {
   // 步骤 1：清掉停用标记
-  if (fs.existsSync(FLAG_FILE)) {
-    fs.unlinkSync(FLAG_FILE);
+  if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
+
+  // 步骤 2：防重复（pid 文件探活）
+  if (readPidFile() !== null) {
+    return { ok: false, error: '机器人已在运行（PID ' + readPidFile() + '）' };
   }
 
-  // 步骤 2：防重复启动（同样按命令行精确判定）
-  const existingPid = findBotPid();
-  if (existingPid !== null) {
-    return { ok: false, error: '机器人已在运行（PID ' + existingPid + '）' };
-  }
+  // 步骤 3：零闪窗启动（wscript 静默跑一轮 supervisor 体检：拉起 bot + ollama）
+  spawn('wscript.exe', ['E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs'], {
+    windowsHide: true,
+    creationFlags: CREATE_NO_WINDOW,
+    detached: true,
+  }).unref();
 
-  // 步骤 3：便携 Node 不存在时回退到 PATH 里的 node
-  const nodeExe = fs.existsSync(PORTABLE_NODE) ? PORTABLE_NODE : 'node';
-
-  // 日志目录可能不存在，先建好；以追加方式打开日志句柄
-  fs.mkdirSync(path.dirname(BOT_LOG), { recursive: true });
-  const logFd = fs.openSync(BOT_LOG, 'a');
-
-  try {
-    const child = spawn(nodeExe, [BOT_ENTRY], {
-      cwd: PROJECT_ROOT,        // 必须在项目根运行
-      detached: true,           // 脱离父进程：控制台关闭后 bot 继续在后台跑
-      stdio: ['ignore', logFd, logFd], // stdin 关闭，输出全部进日志文件
-      windowsHide: true,        // 不弹出控制台黑窗
-      creationFlags: CREATE_NO_WINDOW,
-    });
-    child.unref(); // 主进程不等待、不持有引用
-    return { ok: true, pid: child.pid };
-  } finally {
-    // 子进程已继承句柄，父进程这份可以关掉（关闭不影响子进程写日志）
-    try { fs.closeSync(logFd); } catch (err) { /* 忽略 */ }
-  }
+  return { ok: true, note: '已请求启动，约 1 分钟内上线' };
 }
 
 /**
  * 停止 bot：
  *  1. 先写入停用标记（防止任何守护脚本随后又把 bot 拉起来）
- *  2. 再用 PowerShell 精确杀掉"命令行含 src/index.js"的 node 进程（Stop-Process -Id）
+ *  2. 用 PID 文件探活后直接 process.kill 杀掉机器人进程（零子进程、零闪窗）
  * 返回 {ok:true} 或 {ok:false, error}
  */
 async function doStopBot() {
-  // 步骤 1：先落盘停用标记
+  // 步骤 1：先落盘停用标记（看门狗不会拉起）
   fs.mkdirSync(path.dirname(FLAG_FILE), { recursive: true });
   fs.writeFileSync(FLAG_FILE, '');
 
-  // 步骤 2：精确杀进程（异步执行，不阻塞主进程；没有匹配进程时该命令也正常退出 0）
-  const errText = await runPowerShell(
-    PS_STOP_BOT + ' ; if ($?) { exit 0 } else { exit 1 }',
-    15000
-  );
-  // runPowerShell 不区分失败，改为完成即成功（Stop-Process 带 -ErrorAction SilentlyContinue 语义）
+  // 步骤 2：从 PID 文件读机器人进程并直接 kill（零子进程）
+  const pid = readPidFile();
+  if (pid !== null) {
+    try { process.kill(pid, 'SIGKILL'); } catch (err) { /* 已退出 */ }
+    try { fs.unlinkSync(BOT_PID_FILE); } catch (err) { /* 忽略 */ }
+  }
   return { ok: true };
 }
 
@@ -582,21 +478,30 @@ ipcMain.handle('getLogs', async (_event, lines) => {
  */
 ipcMain.handle('startOllama', async () => {
   try {
-    if ((await getProcessNamesAsync(['ollama'])).has('ollama')) {
-      return { ok: true, alreadyRunning: true };
+    // 清除独立停用标记（看门狗恢复对 Ollama 的守护）
+    const ollamaFlag = 'E:\\wechaty-bot\\state\\ollama-disabled.flag';
+    if (fs.existsSync(ollamaFlag)) fs.unlinkSync(ollamaFlag);
+
+    // 若 Ollama API 已可用则幂等返回
+    try {
+      const res = await fetchWithTimeout(OLLAMA_API, 1500);
+      if (res.ok) return { ok: true, alreadyRunning: true };
+    } catch (err) { /* 未就绪，继续启动 */ }
+
+    // 零闪窗启动：交给 VBS（wscript 是 GUI 子系统，无控制台窗口）静默执行
+    // VBS 内容 = 隐藏运行 ollama serve
+    const launcher = 'E:\\wechaty-bot\\scripts\\start-ollama.vbs';
+    spawn('wscript.exe', [launcher], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
+
+    // 等 Ollama 端口就绪（最多 15 秒），让 UI 状态及时刷新
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const res = await fetchWithTimeout(OLLAMA_API, 1500);
+        if (res.ok) break;
+      } catch (err) { /* 还没起，继续等 */ }
     }
-    if (!fs.existsSync(OLLAMA_EXE)) {
-      return { ok: false, error: '未找到 Ollama：E:\\Ollama\\ollama.exe' };
-    }
-    const child = spawn(OLLAMA_EXE, ['serve'], {
-      cwd: 'E:\\Ollama',
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      creationFlags: CREATE_NO_WINDOW,
-    });
-    child.unref();
-    return { ok: true, alreadyRunning: false };
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }
@@ -646,23 +551,30 @@ ipcMain.handle('testChat', async (_event, text) => {
   }
 });
 
-// 开机自启（HKCU Run 键）
+// ==================== 开机自启（Startup 目录 vbs，纯文件操作零闪窗） ====================
+
+const STARTUP_DIR = path.join(process.env.APPDATA || '', 'Microsoft\\Windows\\Start Menu\\Programs\\Startup');
+const AUTOSTART_VBS = path.join(STARTUP_DIR, 'wechaty-bot-autostart.vbs');
+const AUTOSTART_VBS_CONTENT =
+  "' Wechaty bot autostart: hidden watchdog round (starts bot + ollama)\r\n" +
+  'CreateObject("WScript.Shell").Run "wscript.exe ""E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs""", 0, False';
+
 ipcMain.handle('getAutostart', async () => {
-  const out = await runPowerShell(
-    "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -ErrorAction SilentlyContinue).WechatyBotSupervisor",
-    10000
-  );
-  return { ok: true, enabled: Boolean(out && out.trim()) };
+  return { ok: true, enabled: fs.existsSync(AUTOSTART_VBS) };
 });
 
 ipcMain.handle('setAutostart', async (_event, enable) => {
-  const key = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-  const val = 'wscript.exe "E:\\wechaty-bot\\scripts\\watchdog-launcher.vbs"';
-  const cmd = enable
-    ? `Set-ItemProperty -Path '${key}' -Name 'WechatyBotSupervisor' -Value '${val}'`
-    : `Remove-ItemProperty -Path '${key}' -Name 'WechatyBotSupervisor' -ErrorAction SilentlyContinue`;
-  await runPowerShell(cmd, 10000);
-  return { ok: true, enabled: Boolean(enable) };
+  try {
+    if (enable) {
+      fs.mkdirSync(STARTUP_DIR, { recursive: true });
+      fs.writeFileSync(AUTOSTART_VBS, AUTOSTART_VBS_CONTENT, 'utf8');
+    } else if (fs.existsSync(AUTOSTART_VBS)) {
+      fs.unlinkSync(AUTOSTART_VBS);
+    }
+    return { ok: true, enabled: Boolean(enable) };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
 });
 
 // 长期记忆列表（memories 目录递归，只读 JSON 元信息）
@@ -704,6 +616,27 @@ ipcMain.handle('deleteMemory', async (_event, rel) => {
       return { ok: true };
     }
     return { ok: false, error: '非法路径' };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 完全关闭 Ollama：写独立停用标记（看门狗不再拉起）→ taskkill 全部 ollama 进程。
+// 注意：关闭后机器人将无法生成回复（视觉/文本都依赖 Ollama）。
+ipcMain.handle('stopOllama', async () => {
+  try {
+    const ollamaFlag = 'E:\\wechaty-bot\\state\\ollama-disabled.flag';
+    fs.mkdirSync(path.dirname(ollamaFlag), { recursive: true });
+    fs.writeFileSync(ollamaFlag, '');
+    // taskkill 由 VBS（GUI 子系统，无控制台窗口）静默执行——根治闪窗
+    const child = spawn('wscript.exe', ['E:\\wechaty-bot\\scripts\\stop-ollama.vbs'], {
+      windowsHide: true,
+      creationFlags: CREATE_NO_WINDOW,
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    await new Promise((resolve) => child.on('exit', resolve));
+    return { ok: true, output: out.trim() };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }

@@ -77,18 +77,21 @@ function renderStatus(st) {
   $('badge-model').textContent = m;
   $('models-current').textContent = m;
 
-  // Ollama 状态
+  // Ollama 状态（按钮互斥：运行中→红"关闭 Ollama"；停止→粉"启动 Ollama"）
   const oOk = st.ollamaRunning;
   const dotO = $('dot-ollama');
   dotO.className = 'dot' + (oOk ? ' ok' : ' off');
   $('text-ollama').textContent = oOk ? '运行中' : '未运行';
-  $('btn-ollama').disabled = oOk;
+  const btnO = $('btn-ollama');
+  btnO.disabled = false;
+  btnO.classList.toggle('stop', oOk);
+  btnO.textContent = oOk ? '关闭 Ollama' : '启动 Ollama';
+  btnO.title = oOk ? '完全关闭 Ollama（机器人将无法生成回复）' : '启动 Ollama AI 服务';
 
-  // 微信状态
-  const wOk = st.wechatRunning;
+  // 微信客户端：不再轮询进程（会闪控制台窗），显示中性提示
   const dotW = $('dot-wechat');
-  dotW.className = 'dot' + (wOk ? ' ok' : ' off');
-  $('text-wechat').textContent = wOk ? '运行中' : '未运行';
+  dotW.className = 'dot off';
+  $('text-wechat').textContent = '以微信窗口登录状态为准';
 
   // 主页提示
   const hint = $('home-hint');
@@ -120,13 +123,15 @@ async function onPowerClick() {
 
 async function onOllamaClick() {
   const btn = $('btn-ollama');
+  const turningOff = lastStatus && lastStatus.ollamaRunning;
   btn.disabled = true;
+  btn.textContent = turningOff ? '关闭中…' : '启动中…';
   try {
-    const fn = api('startOllama');
+    const fn = api(turningOff ? 'stopOllama' : 'startOllama');
     if (fn) {
       const r = await fn();
-      if (r && r.ok === false) toast('启动 Ollama 失败：' + (r.error || ''), true);
-      else toast('Ollama 已启动');
+      if (r && r.ok === false) toast((turningOff ? '关闭' : '启动') + ' Ollama 失败：' + (r.error || ''), true);
+      else toast(turningOff ? 'Ollama 已完全关闭' : 'Ollama 已启动');
     }
   } finally {
     setTimeout(() => { btn.disabled = false; }, 2500);

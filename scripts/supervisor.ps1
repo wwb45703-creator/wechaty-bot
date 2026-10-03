@@ -70,7 +70,9 @@ function Start-Guarded {
         else { Log "start failed!" }
     }
 
-    # guard local Ollama
+    # guard local Ollama（独立开关：state\ollama-disabled.flag 存在则不守护/不拉起）
+    $ollamaFlag = Join-Path $botDir 'state\ollama-disabled.flag'
+    if (Test-Path $ollamaFlag) { return }
     $ollamaAlive = Test-PortListening 11434
     if (-not $ollamaAlive) {
         $ollamaProc = Get-Process -Name 'ollama' -ErrorAction SilentlyContinue
