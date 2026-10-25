@@ -48,7 +48,7 @@ ok('初始信任倾向为40', state.baselineTraits['信任倾向'] === 40)
 ok('初始爱好包含待定', state.hobbies.some((h) => h.name === '待定'))
 
 // ----------------------------------------------------------------
-// 2. 阻尼平滑演化与边界保护
+// 2. 阻尼平滑演化与边界保护（心理学特质可塑性模型）
 // ----------------------------------------------------------------
 const initialOut = state.traits['外向性']
 recordEvolutionEvent({
@@ -72,6 +72,16 @@ for (let i = 0; i < 20; i++) {
 }
 const boundedOut = state.traits['外向性']
 ok('外向性严格限制在边界内 (<= 75)', boundedOut <= 75, `当前值=${boundedOut}`)
+
+// 心理学负面偏好验证 (Negativity Bias: 负向惩罚比正向增益更强烈)
+const trustBeforePos = state.traits['信任倾向']
+recordEvolutionEvent({ eventType: 'positive_response', weight: 0.5, reason: '正向反馈测试', userId: 'user_bias_pos' })
+const trustGain = Math.abs(state.traits['信任倾向'] - trustBeforePos)
+
+const trustBeforeNeg = state.traits['信任倾向']
+recordEvolutionEvent({ eventType: 'negative_feedback', weight: 0.5, reason: '负向反馈测试', userId: 'user_bias_neg' })
+const trustLoss = Math.abs(state.traits['信任倾向'] - trustBeforeNeg)
+ok('负面偏好非对称效应生效 (负面冲击惩罚 > 正面增益)', trustLoss >= trustGain, `正向增益=${trustGain.toFixed(2)}, 负向挫伤=${trustLoss.toFixed(2)}`)
 
 // ----------------------------------------------------------------
 // 3. 防对抗操纵与提示词注入探测
@@ -117,8 +127,10 @@ const emoPrompt = formatEmotionPrompt()
 ok('情绪生成有效提示词', emoPrompt.includes('即时情绪状态') && emoPrompt.includes('打字语气微调指引'))
 
 // ----------------------------------------------------------------
-// 6. 成员独立人际关系网络
+// 6. 成员独立人际关系网络（社会渗透洋葱模型与损失厌恶）
 // ----------------------------------------------------------------
+import { calculateSocialPenetrationFamiliarity, applyRelationshipDecay } from '../src/personality/relationship.js'
+
 const testUid = 'user_rel_test_999'
 clearRelationship(testUid)
 
@@ -144,6 +156,33 @@ const relAfter = getRelationship(testUid)
 ok('多次正向交流后熟悉度与信任度上升', relAfter.familiarity > relInitial.familiarity && relAfter.trust > relInitial.trust)
 ok('记录了共同话题', relAfter.sharedTopics.includes('游戏娱乐'))
 ok('绑定了关键共同经历', relAfter.sharedExperiences.includes('ep_test_01'))
+
+// 洋葱模型断言：仅刷频次无法突破初识门槛瓶颈 (上限40分)
+const spamFam = calculateSocialPenetrationFamiliarity(100, 0, 0)
+ok('洋葱模型限制纯刷屏熟练度瓶颈 (<= 40分)', spamFam <= 40, `频次100但无话题经历熟悉度=${spamFam}`)
+
+// 洋葱模型断言：多话题广度 + 多情景深度成功突破核心阶段
+const deepFam = calculateSocialPenetrationFamiliarity(40, 4, 3)
+ok('多话题与深层情景经历助力熟悉度突破核心阶段 (>= 80分)', deepFam >= 80, `综合熟悉度=${deepFam}`)
+
+// 艾宾浩斯式关系衰减与经历锚点保护验证
+const oldFriendRel = {
+  familiarity: 70,
+  lastInteractedAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(), // 60 天前
+  sharedExperiences: ['ep_deep_01', 'ep_deep_02'], // 2 个重要锚点
+}
+applyRelationshipDecay(oldFriendRel)
+ok('经历锚点保护老友熟悉度不跌穿底线 (>= 35分)', oldFriendRel.familiarity >= 35, `衰减后=${oldFriendRel.familiarity}`)
+
+// 信任度损失厌恶断言 (负向冲突跌幅明显大于正向增幅)
+const trustBeforeConflict = relAfter.trust
+recordMemberInteraction({
+  userId: testUid,
+  displayName: '小李',
+  sentiment: 'negative',
+})
+const trustLossRel = Math.abs(getRelationship(testUid).trust - trustBeforeConflict)
+ok('信任度损失厌恶生效 (负向惩罚 > 1.5)', trustLossRel >= 1.5, `冲突损失=${trustLossRel.toFixed(1)}`)
 
 const relPrompt = formatRelationshipPrompt(testUid, '小李')
 ok('人际关系生成针对性交谈策略', relPrompt.includes('目标群友：小李') && relPrompt.includes('交谈风格建议'))

@@ -119,6 +119,24 @@ export function isManipulationAttempt(text) {
 }
 
 /**
+ * 心理学饱和非线性阻尼系数 (Saturation Damping, Roberts & DelVecchio 特质可塑性模型)
+ * 越接近边界极值，深层人格的改变阻力呈非线性增加（边际阻抗效应）
+ */
+function calculateSaturationDamping(currentVal, delta, [minBound, maxBound]) {
+  const totalRange = maxBound - minBound
+  if (totalRange <= 0) return 1.0
+
+  if (delta > 0) {
+    const remainingHeadroom = Math.max(0, maxBound - currentVal)
+    return Math.pow(remainingHeadroom / totalRange, 1.15)
+  } else if (delta < 0) {
+    const remainingFootroom = Math.max(0, currentVal - minBound)
+    return Math.pow(remainingFootroom / totalRange, 1.15)
+  }
+  return 1.0
+}
+
+/**
  * 推进人格演化（阻尼渐进微调）
  * @param {object} p
  * @param {string} p.eventType 互动事件类型：'positive_response' | 'deep_discussion' | 'friendly_interaction' | 'negative_feedback' | 'topic_interest'
@@ -143,34 +161,36 @@ export function recordEvolutionEvent({ eventType, weight = 0.5, topic = '', reas
     dailyUserWeight.set(userKey, Math.min(MAX_USER_DAILY_WEIGHT, currentWeight + weight))
   }
 
-  // 2. 计算各维度阻尼微变量（Δ = 学习率 0.15 * weight * 影响系数）
+  // 2. 计算各维度心理学阻尼微变量（学习率 0.15 * weight * 影响系数）
   const lr = 0.15
   const deltas = {}
+  // 进化心理学负面偏好系数 (Negativity Bias: 2.2x, 威胁/挫败体验比等量正面刺激深刻得多)
+  const NEGATIVITY_BIAS = 2.2
 
   switch (eventType) {
     case 'positive_response':
-      // 长期受到积极回应 -> 提高社交主动性（外向性微升）与信任度微升
+      // 长期受到积极回应 -> 提高社交主动性（外向性）与信任感
       deltas['外向性'] = lr * weight * 1.2
-      deltas['信任倾向'] = lr * weight * 0.8
+      deltas['信任倾向'] = lr * weight * 0.9
       break
 
     case 'deep_discussion':
-      // 长期参与技术/深度讨论 -> 好奇心微升，幽默微调
+      // 长期参与技术/深度讨论 -> 好奇心提升；若好奇心已在高位，反哺社交表达自信
       deltas['好奇心'] = lr * weight * 1.5
-      deltas['外向性'] = lr * weight * 0.4
+      deltas['外向性'] = lr * weight * ((state.traits['好奇心'] || 85) > 85 ? 0.6 : 0.3)
       break
 
     case 'friendly_interaction':
-      // 经常被成员友好对待 -> 增加信任倾向
-      deltas['信任倾向'] = lr * weight * 1.5
-      deltas['情绪敏感度'] = -lr * weight * 0.3 // 情绪稍显安全放松
+      // 经常被成员友好对待 -> 增加信任倾向，情绪安全感提升（敏感度微降）
+      deltas['信任倾向'] = lr * weight * 1.4
+      deltas['情绪敏感度'] = -lr * weight * 0.4
       break
 
     case 'negative_feedback':
-      // 经常受到负面反馈 -> 某些策略变谨慎（信任微降，敏感度微升）
-      deltas['信任倾向'] = -lr * weight * 1.0
-      deltas['情绪敏感度'] = lr * weight * 1.2
-      deltas['外向性'] = -lr * weight * 0.5
+      // 负面偏好非对称模型：信任下降和情绪敏感紧绷明显加速，伴随轻度社交退缩
+      deltas['信任倾向'] = -lr * weight * (1.0 * NEGATIVITY_BIAS)
+      deltas['情绪敏感度'] = lr * weight * (1.1 * NEGATIVITY_BIAS)
+      deltas['外向性'] = -lr * weight * (0.5 * NEGATIVITY_BIAS)
       break
 
     default:
@@ -193,16 +213,25 @@ export function recordEvolutionEvent({ eventType, weight = 0.5, topic = '', reas
     }
   }
 
-  // 4. 应用数值微变并施加边界安全约束
+  // 4. 应用数值微变并施加心理学阻尼与边界安全约束
   const logs = []
   let changed = false
   for (const [trait, delta] of Object.entries(deltas)) {
     if (!state.traits[trait]) continue
     const oldVal = state.traits[trait]
     const bounds = state.traitBounds[trait] || [10, 95]
+
+    // 引入心理学饱和阻尼调节 (结合最小可觉差 JND 阈值，保证每次有效事件能产生 0.1 的微调)
+    const damping = calculateSaturationDamping(oldVal, delta, bounds)
+    let effectiveDelta = delta * Math.max(0.15, damping)
+    if (Math.abs(effectiveDelta) < 0.06 && Math.abs(delta) >= 0.05) {
+      effectiveDelta = delta > 0 ? 0.08 : -0.08
+    }
+
     // 单次变动幅度硬切片，最大绝对值不超过 1.5
-    const clampedDelta = Math.max(-1.5, Math.min(1.5, delta))
-    const newVal = Math.round(Math.max(bounds[0], Math.min(bounds[1], oldVal + clampedDelta)) * 10) / 10
+    const clampedDelta = Math.max(-1.5, Math.min(1.5, effectiveDelta))
+    const rawNewVal = oldVal + clampedDelta
+    const newVal = Math.round(Math.max(bounds[0], Math.min(bounds[1], rawNewVal)) * 10) / 10
 
     if (newVal !== oldVal) {
       state.traits[trait] = newVal
@@ -222,8 +251,8 @@ export function recordEvolutionEvent({ eventType, weight = 0.5, topic = '', reas
 }
 
 /**
- * 稳态自然微回归（防止长期离开基准极度偏离）
- * 在定时或特定触发时轻微拉回（每轮最多拉回 0.1）
+ * 稳态自然弹性微回归（胡克定律过阻尼系统）
+ * 离开基线越远，回复力越强；在平衡位置附近保留充足个性空间
  */
 export function applyHomeostasisDecay() {
   const state = getPersonaState()
@@ -232,7 +261,8 @@ export function applyHomeostasisDecay() {
     const cur = state.traits[trait]
     const diff = cur - base
     if (Math.abs(diff) > 2) {
-      const step = diff > 0 ? -0.1 : 0.1
+      const magnitude = Math.min(0.2, Math.max(0.05, 0.04 * Math.abs(diff)))
+      const step = diff > 0 ? -magnitude : magnitude
       state.traits[trait] = Math.round((cur + step) * 10) / 10
       changed = true
     }
