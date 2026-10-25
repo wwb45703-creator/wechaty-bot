@@ -249,10 +249,10 @@ export function applyHomeostasisDecay() {
 export function formatPersonaPrompt() {
   const state = getPersonaState()
   const activeHobbies = (state.hobbies || [])
-    .filter((h) => h.status === 'active' || (h.confidence >= 0.5 && h.name !== '待定'))
-    .map((h) => h.name)
+    .filter((h) => h.name !== '待定' && (h.status === 'active' || (h.confidence || 0) >= 0.15 || (h.count || 0) >= 1))
+    .map((h) => (h.status === 'active' ? h.name : `${h.name}(萌芽探索中)`))
 
-  const hobbiesDesc = activeHobbies.length > 0 ? activeHobbies.join('、') : '待定（正在群聊交流中随经历逐步形成）'
+  const hobbiesDesc = activeHobbies.length > 0 ? activeHobbies.join('、') : '待定（正在全场景交流中随经历逐步形成）'
 
   const t = state.traits
   return `【当前动态演化人格】

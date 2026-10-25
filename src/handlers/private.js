@@ -6,6 +6,7 @@ import { splitBubbles, sendBubbles } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 import { clearRelationship } from '../personality/relationship.js'
+import { reflectOnMemories } from '../personality/reflection.js'
 
 /**
  * 私聊自动回复
@@ -122,6 +123,13 @@ export async function handlePrivateMessage(msg) {
           if (facts && facts.length) {
             const added = await appendFacts(memRef, facts, alias || name, requestedAt)
             if (added) logger.info(`长期记忆 +${added}（私聊 ${alias || name}）`)
+            // 记忆反哺人格演化（全场景多用户汇流）
+            reflectOnMemories({
+              userId: talker.id,
+              displayName: alias || name,
+              facts,
+              source: 'private',
+            }).catch(() => {})
           }
         }).catch((e) => logger.warn(`记忆提取/写盘失败（私聊）: ${e?.message || e}`))
       })

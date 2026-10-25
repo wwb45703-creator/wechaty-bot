@@ -5,6 +5,7 @@ import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
+import { reflectOnMemories } from '../personality/reflection.js'
 
 /**
  * 群聊自动回复：
@@ -258,6 +259,14 @@ export async function handleRoomMessage(msg, room) {
           if (facts && facts.length) {
             const added = await appendFacts(memRef, facts, name, requestedAt)
             if (added) logger.info(`长期记忆 +${added}（群[${topic}] ${name}）`)
+            // 记忆反哺人格演化（全场景多用户汇流）
+            reflectOnMemories({
+              userId: talker.id,
+              displayName: name,
+              roomId: room.id,
+              facts,
+              source: 'room',
+            }).catch(() => {})
           }
         }).catch((e) => logger.warn(`记忆提取/写盘失败（群[${topic}]）: ${e?.message || e}`))
       })
