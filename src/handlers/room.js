@@ -238,6 +238,9 @@ export async function handleRoomMessage(msg, room) {
     systemExtra,
     memoryText,
     personaName: getActivePersonaName(personaRef),
+    talkerId: talker.id,
+    talkerName: name,
+    roomId: room.id,
   })
   if (reply) {
     const bubbles = splitBubbles(reply)

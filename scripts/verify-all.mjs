@@ -122,13 +122,14 @@ if (fs.existsSync(supervisorPath)) {
 }
 
 // ----------------------------------------------------
-// 门禁 4 ~ 7: 自动化测试套件执行
+// 门禁 4 ~ 8: 自动化测试套件执行
 // ----------------------------------------------------
 const suites = [
   { name: '链接识别与 SSRF 防护测试', script: 'test-link.mjs' },
   { name: '联网检索与 Agent Reach 测试', script: 'test-reach.mjs' },
   { name: '长程记忆机制与隔离测试', script: 'test-memory.mjs' },
   { name: '群聊免 @ 触发规则专项测试', script: 'test-room-trigger.mjs' },
+  { name: '拟真人格演化与三层记忆专项测试', script: 'test-persona-evolution.mjs' },
 ]
 
 for (const suite of suites) {

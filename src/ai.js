@@ -1,6 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { logger } from './logger.js'
+import { formatPersonaPrompt, recordEvolutionEvent, isManipulationAttempt } from './personality/persona-state.js'
+import { processMessageStimulus, formatEmotionPrompt } from './personality/emotion.js'
+import { recordMemberInteraction, formatRelationshipPrompt } from './personality/relationship.js'
 
 /**
  * AI 模块：调用本地 Ollama 的 /api/chat 接口。
@@ -132,7 +135,17 @@ export async function chat(p) {
   return job
 }
 
-async function doChat({ key, userText, systemExtra = '', memoryText = '', personaName = '' }) {
+async function doChat({
+  key,
+  userText,
+  systemExtra = '',
+  memoryText = '',
+  personaName = '',
+  talkerId = '',
+  talkerName = '',
+  roomId = '',
+  isConflict = false,
+}) {
   // 一次性任务（如 link-once:*, search-once:*）不占上下文历史，防挤出正常用户记忆
   const isOnce = typeof key === 'string' && key.includes('-once:')
   let history
@@ -142,13 +155,27 @@ async function doChat({ key, userText, systemExtra = '', memoryText = '', person
     history.push({ role: 'user', content: userText })
   }
 
-  // 人设 = 角色卡 + 共享行为规则（chat 可按会话切换角色卡）
-  const roleCard = (personaName && configRef?.personas?.[personaName]) || configRef?.persona || persona
+  // 1. 瞬时情绪动态计算
+  processMessageStimulus(userText, isConflict)
+
+  // 2. 动态心理画像与人际关系构建
+  const dynamicPersona = formatPersonaPrompt()
+  const dynamicEmotion = formatEmotionPrompt()
+  const relPrompt = talkerId ? formatRelationshipPrompt(talkerId, talkerName) : ''
+
+  // 3. 基础行为规范
   const base = configRef?.personaBase || ''
-  const system = roleCard
-    + (base ? `\n\n${base}` : '')
-    + (systemExtra ? `\n\n当前场景：${systemExtra}` : '')
-    + (memoryText ? `\n\n${memoryText}` : '')
+
+  // 4. 组装全维度合成 Prompt
+  const system = [
+    dynamicPersona,
+    base,
+    dynamicEmotion,
+    relPrompt,
+    systemExtra ? `当前场景：${systemExtra}` : '',
+    memoryText,
+  ].filter(Boolean).join('\n\n')
+
   const messages = isOnce
     ? [{ role: 'system', content: system }, { role: 'user', content: userText }]
     : [{ role: 'system', content: system }, ...history]
@@ -166,6 +193,61 @@ async function doChat({ key, userText, systemExtra = '', memoryText = '', person
       history.push({ role: 'assistant', content: reply })
       trimHistory(key)
     }
+
+    // 5. 回复成功后，异步推进关系沉淀与人格演化判定（不阻塞聊天消息送达）
+    if (talkerId && !isOnce) {
+      Promise.resolve().then(() => {
+        const manipulation = isManipulationAttempt(userText)
+        let sentiment = 'neutral'
+        if (/(哈哈|谢谢|好玩|厉害|可爱|大佬|懂了|牛|喜欢|爱了|好棒)/.test(userText)) sentiment = 'positive'
+        if (/(傻|滚|脑瘫|死|垃圾|废物|sb|nc|二逼)/.test(userText)) sentiment = 'negative'
+
+        let topic = ''
+        if (/(代码|编程|python|node|js|bug|api|linux|服务器|前端|后端)/i.test(userText)) topic = '编程技术'
+        else if (/(原神|绝区零|崩铁|王者|游戏|steam|打瓦|瓦罗兰特|黑神话)/i.test(userText)) topic = '游戏娱乐'
+        else if (/(番剧|二次元|动漫|cos|漫画|新番)/i.test(userText)) topic = '二次元动漫'
+
+        recordMemberInteraction({
+          userId: talkerId,
+          displayName: talkerName,
+          topic,
+          sentiment,
+        })
+
+        if (!manipulation) {
+          if (sentiment === 'positive') {
+            recordEvolutionEvent({
+              eventType: 'positive_response',
+              weight: 0.4,
+              topic,
+              reason: '受到群友正向反馈',
+              userId: talkerId,
+              roomId,
+            })
+          } else if (sentiment === 'negative') {
+            recordEvolutionEvent({
+              eventType: 'negative_feedback',
+              weight: 0.5,
+              reason: '受到负向攻击/抵触反馈',
+              userId: talkerId,
+              roomId,
+            })
+          } else if (topic) {
+            recordEvolutionEvent({
+              eventType: 'deep_discussion',
+              weight: 0.3,
+              topic,
+              reason: `参与话题交流[${topic}]`,
+              userId: talkerId,
+              roomId,
+            })
+          }
+        }
+      }).catch((e) => {
+        logger.warn(`[ai] 后续演化沉淀异常: ${e.message}`)
+      })
+    }
+
     return reply
   } catch (err) {
     if (!isOnce && history) {

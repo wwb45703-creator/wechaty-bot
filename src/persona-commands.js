@@ -38,7 +38,26 @@ export function handlePersonaCommand({ text, ref, chatKey, reply }) {
   const current = getActivePersonaName(ref)
 
   if (t === '人设列表' || t === '角色列表') {
-    reply(`可选角色：${roleNames().join(' / ')}\n当前激活：${current}\n切换说"变成<角色名>"，恢复默认说"恢复默认"`)
+    reply(`可选角色：${roleNames().join(' / ')}\n当前激活：${current}\n切换说"变成<角色名>"，恢复默认说"恢复默认"，查演化参数说"性格状态"`)
+    return true
+  }
+  if (t === '性格状态' || t === '人格状态' || t === '心理状态') {
+    import('./personality/persona-state.js').then(({ getPersonaState }) => {
+      import('./personality/emotion.js').then(({ getEmotionState }) => {
+        const st = getPersonaState()
+        const emo = getEmotionState()
+        const hobbies = (st.hobbies || []).map((h) => `${h.name}(${h.status === 'active' ? '已确立' : '萌芽中'})`).join('、') || '待定'
+        reply(`📊 【鹅王·当前拟真心理与演化状态】\n` +
+          `深层性格（五维演化值）：\n` +
+          ` • 外向性: ${st.traits['外向性']}/100\n` +
+          ` • 好奇心: ${st.traits['好奇心']}/100\n` +
+          ` • 情绪敏感度: ${st.traits['情绪敏感度']}/100\n` +
+          ` • 幽默倾向: ${st.traits['幽默倾向']}/100\n` +
+          ` • 信任倾向: ${st.traits['信任倾向']}/100\n\n` +
+          `动态沉淀爱好: ${hobbies}\n\n` +
+          `即时情绪: 愉悦 ${emo.pleasure} | 兴奋 ${emo.arousal} | 防御 ${emo.tension} | 疲劳 ${emo.fatigue}`)
+      })
+    })
     return true
   }
   if (t === '恢复默认' || t === '恢复人设') {

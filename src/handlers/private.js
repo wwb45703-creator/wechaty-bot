@@ -5,6 +5,7 @@ import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
+import { clearRelationship } from '../personality/relationship.js'
 
 /**
  * 私聊自动回复
@@ -56,19 +57,30 @@ export async function handlePrivateMessage(msg) {
   if (isMemoryEnabled()) {
     if (text === '我的记忆') {
       const mem = getMemory(memRef)
-      if (!mem.facts.length) {
+      const hasFacts = mem.facts && mem.facts.length > 0
+      const hasEpisodes = mem.episodes && mem.episodes.length > 0
+      if (!hasFacts && !hasEpisodes) {
         await msg.say('我还没记住关于你的什么，多聊聊就有了～')
       } else {
-        const lines = mem.facts.slice(-15).map((f) => `- ${f.text}（${f.date}）`)
-        await msg.say(`我记着的关于你的事：\n${lines.join('\n')}\n（说"忘记我"可全部清除）`)
+        const parts = []
+        if (hasFacts) {
+          const lines = mem.facts.slice(-15).map((f) => `- ${f.text}（${f.date}）`)
+          parts.push(`【事实与偏好】\n${lines.join('\n')}`)
+        }
+        if (hasEpisodes) {
+          const epLines = mem.episodes.slice(-5).map((e) => `- ${e.description}（${e.date}）`)
+          parts.push(`【重要共同经历】\n${epLines.join('\n')}`)
+        }
+        await msg.say(`我记着的关于你的事：\n${parts.join('\n\n')}\n（说"忘记我"可全部清除）`)
       }
       recordReply(key, 0)
       return
     }
     if (text === '忘记我') {
       clearMemory(memRef)
+      clearRelationship(talker.id)
       resetConversation(key)
-      await msg.say('好，关于你的记忆我都删掉了，我们从新认识吧。')
+      await msg.say('好，关于你的记忆与互动记录我都删掉了，我们从新认识吧。')
       recordReply(key, 0)
       return
     }
@@ -95,6 +107,8 @@ export async function handlePrivateMessage(msg) {
     systemExtra: '当前是微信私聊，对方直接和你一对一说话。',
     memoryText,
     personaName: getActivePersonaName(personaRef),
+    talkerId: talker.id,
+    talkerName: alias || name,
   })
   if (reply) {
     const bubbles = splitBubbles(reply)
