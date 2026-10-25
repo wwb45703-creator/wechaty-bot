@@ -20,6 +20,7 @@ import { runCli } from './spawn-utils.js'
 import { platformFetch } from './platforms.js'
 import { fetchViaJina } from './jina.js'
 import { fetchViaBrowser } from './browser.js'
+import { fetchViaAgentReach, isAgentReachSpecialized } from './agent-reach-bridge.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -91,7 +92,7 @@ export async function fetchRich(urlStr, opts = {}) {
     summaryChars: opts.summaryChars,
   })
 
-  // L0 平台特化
+  // L0 平台特化（B站官方API / yt-dlp / V2EX / gh CLI，快速轻量）
   try {
     const p = await platformFetch(urlStr, layerOpts())
     if (p) {
@@ -103,10 +104,38 @@ export async function fetchRich(urlStr, opts = {}) {
     attempts.push(`L0平台:${err?.message || err}`)
   }
 
-  // L1 原生 fetch
+  // Agent Reach（特长平台优先解析：Twitter/X, Reddit, GitHub, 小红书, 雪球等）
+  if (config.reach?.agentReach?.enabled !== false && isAgentReachSpecialized(urlStr) && budgetLeft()) {
+    try {
+      const ar = await fetchViaAgentReach(urlStr, layerOpts())
+      if (ar) {
+        if (ar.fatal) return { ok: false, error: ar.error, attempts }
+        if (ar.ok && !isThin(ar)) return ar
+      }
+      attempts.push('AgentReach(特长平台):无结果')
+    } catch (err) {
+      attempts.push(`AgentReach(特长平台):${err?.message || err}`)
+    }
+  }
+
+  // L1 原生 fetch（普通新闻/博客/网页零依赖最快）
   const r1 = await fetchPageText(urlStr, layerOpts())
   if (r1.ok && !isThin(r1)) return { ...r1, source: 'native' }
   attempts.push(r1.ok ? 'L1原生:内容过薄' : `L1原生:${r1.error}`)
+
+  // Agent Reach（通用页面降级解析：当 L1 内容过薄或失败时，利用全网解析能力尝试兜底）
+  if (config.reach?.agentReach?.enabled !== false && budgetLeft()) {
+    try {
+      const ar = await fetchViaAgentReach(urlStr, layerOpts())
+      if (ar) {
+        if (ar.fatal) return { ok: false, error: ar.error, attempts }
+        if (ar.ok && !isThin(ar)) return ar
+      }
+      attempts.push('AgentReach(降级):无结果')
+    } catch (err) {
+      attempts.push(`AgentReach(降级):${err?.message || err}`)
+    }
+  }
 
   // L2 Scrapling
   if (budgetLeft()) {

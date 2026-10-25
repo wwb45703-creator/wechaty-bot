@@ -1,0 +1,63 @@
+# DECISIONS.md — 重要技术决策及原因
+
+> 按时间序记录本项目的关键技术选型。每条含「决策 / 原因 / 后果」。
+
+## 1. puppet-xp 2.1.1 + 微信 3.9.10.27 锁版本（2026-09-26）
+- **决策**：用 wechaty-puppet-xp（Frida 注入微信桌面客户端）实现免费本地方案，微信锁定 3.9.10.27。
+- **原因**：免费、全本地、无需协议逆向从零开始；puppet-xp 仅适配特定微信版本。
+- **后果**：微信自动升级即失效（需重装 3.9.10.27）；注入违反微信协议有账号风险（用户知情，建议小号）；火绒需加信任区。
+
+## 2. 便携 Node 18 专供机器人（2026-09-26）
+- **决策**：`runtime/node18`（v18.20.8）专用于 bot 进程；系统 Node 24（D:\node.js）供其他工具。
+- **原因**：frida@15 原生绑定（prebuilds/frida-v15.2.2-node-v108）只支持 Node 18 ABI，Node 24 无法注入。
+- **后果**：supervisor/UI 启动 bot 时都硬指定 runtime/node18 路径。
+
+## 3. 本地 Ollama + 无审查模型（2026-09-26 起）
+- **决策**：AI 全部走本机 Ollama（127.0.0.1:11434），文本/视觉用 abliterated 无审查微调模型（qwen3-8b / qwen2.5-vl），模型库 `D:\OllamaModels`。
+- **原因**：聊天数据不出本机；人设需要"毒舌反击"能力，官方对齐模型做不到。
+- **后果**：AI 可用性依赖 Ollama 进程（看门狗守护 + `state/ollama-disabled.flag` 独立开关，用户可关）；8B 模型有复述退化问题（ai.js isRuleEcho 重试缓解）。
+
+## 4. 计划任务看门狗（每分钟 -Once），弃常驻循环（2026-10-01 v2 定稿）
+- **决策**：`WechatyBotWatchdog` 每分钟触发 `supervisor.ps1 -Once`（跑完即退），无任何常驻守护进程。
+- **原因**：常驻循环曾出现僵死/重复拉起；单轮模式天然无僵尸、无资源泄漏；停止=写 flag，确定性强。
+- **后果**：机器人崩溃最多 1 分钟自动恢复；停机窗口会错过 cron 定时发言（接受）。
+
+## 5. wscript VBS 包装一切 powershell 调用（2026-10-03 定稿并强化）
+- **决策**：计划任务动作、开机自启、UI 启停，全部经 `wscript.exe *.vbs` 间接拉起 powershell/程序；UI 主进程零控制台子进程。
+- **原因**：Win11 默认终端（Windows Terminal）下任何 powershell/console spawn 都会闪窗；vbs 的 `WScript.Shell.Run ..., 0` 完全无窗口。
+- **后果**：新增任何后台启动路径都必须走 vbs 或 .NET CreateNoWindow，直接 spawn powershell 必闪窗（2026-10-03 迁移后计划任务直接写 powershell 动作，每分钟弹窗，当晚改回 vbs）。
+
+## 6. pid 文件探活（2026-10-02 UI v1.1）
+- **决策**：bot 启动写 `state/bot.pid`；UI/脚本用 `process.kill(pid,0)` / `Get-Process -Id` 探活。
+- **原因**：旧方案每 3 秒 spawnSync PowerShell 查进程，UI 卡顿根因；且 bot-ctl 的 WQL 进程查询在脚本上下文有实测异常（2026-10-03：`Get-CimInstance -Filter` 在 bot-ctl.ps1 内持续返回空，内联同代码正常，原因未明）。
+- **后果**：`Get-BotProc` 最终采用 `Get-Process` + 可执行路径前缀（`D:\wechaty-bot\*`）匹配——顺带天然排除 MCP 的系统 node，比命令行匹配更安全。
+
+## 7. UI 模型导入纯 HTTP（2026-10-02）
+- **决策**：导入 GGUF 用 `POST /api/blobs`（上传字节）+ `POST /api/create`，模型名程序生成。
+- **原因**：安全扫描（Mimosa）硬拦任何"变量流入 spawn"，即使参数数组+消毒；HTTP 方案无进程注入面。
+- **后果**：Ollama REST 即导入通道；用户输入不进命令行。
+
+## 8. GitHub API 推送通道（2026-09-27）
+- **决策**：推送用 `node scripts/git-api-push.mjs`（Git Data API），本地 `git push` 仅在网络恢复时用。
+- **原因**：github.com:443 直连被墙且状态波动，仅 api.github.com 稳定；SSH 443 可通但密钥未注册。
+- **后果**：gh CLI 已登录 `wwb45703-creator`；私有仓 `wwb45703-creator/wechaty-bot`。
+
+## 9. reach 五层降级抓取（2026-10-03）
+- **决策**：L0 平台 API → L1 原生 fetch → L2 Scrapling（Python）→ L3 Jina（默认关）→ L4 patchright，全链 45s 预算、薄内容降级、每层过 SSRF。
+- **原因**：单层抓取对 SPA/反爬站成功率低；按成本递增排序，可选依赖缺失自动跳过；Jina 会把 URL 发第三方故默认关。
+- **后果**：链接回复成功率大增；B站视频可读字幕/元数据；`reach.scrapling.pythonBin` 可配。
+
+## 10. 长期记忆纯 JSON（2026-09-27）
+- **决策**：记忆为结构化 JSON 文件（私聊一人一份、群聊每人每群一份），facts 追加+上限淘汰。
+- **原因**：模型无关——换任何 Ollama 模型读同一份；无数据库依赖；用户可手查手删。
+- **后果**：`memories/` 含好友隐私，永不入 git；UI 提供查看/删除。
+
+## 11. 多人格 per-chat 切换 + 完全清空会话（2026-10-01）
+- **决策**：切换人设时 `resetConversation` 清空该会话短期记忆；运行态存 `state/personas.json`。
+- **原因**：避免旧人设口吻残留；每群独立生效（A 群换不影响 B 群）。
+- **后果**：链接/看图回复也跟随当前人设（不注入全局 personaBase）。
+
+## 12. npm 走 npmmirror + 路径全 D 盘（2026-09-26 / 2026-10-03）
+- **决策**：npm registry 用 registry.npmmirror.com；项目/模型/微信/Ollama 全部部署 D 盘；C 盘只放系统与用户级 CLI。
+- **原因**：网络环境（直连不稳）+ 用户磁盘管理铁律（大文件不进 C 盘）；2026-10-03 已完成 E→D 盘合并迁移并修正全部引用（HEAD 3c06867）。
+- **后果**：`.npmrc` cache 指向 `D:\npm-cache\npm`；新依赖安装走镜像。

@@ -61,8 +61,10 @@ function Start-HiddenProcess([string]$exe, [string]$argList, [string]$workDir) {
 
 function Start-Guarded {
     # guard the wechaty bot
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -like '*src/index.js*' -or $_.CommandLine -like '*src\index.js*') })
+    # NOTE: Do NOT use Get-CimInstance/WQL CommandLine filter - it returns empty in scheduled task context.
+    # Use Get-Process + executable Path prefix match instead (per AGENTS.md rule #2).
+    $procs = @(Get-Process -Name 'node' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path -like ($botDir + '\*') })
     if ($procs.Count -eq 0) {
         Log "bot not running, starting..."
         $p = Start-HiddenProcess $nodeExe 'src/index.js' $botDir
@@ -70,7 +72,7 @@ function Start-Guarded {
         else { Log "start failed!" }
     }
 
-    # guard local Ollama（独立开关：state\ollama-disabled.flag 存在则不守护/不拉起）
+    # guard local Ollama: skip if state\ollama-disabled.flag exists
     $ollamaFlag = Join-Path $botDir 'state\ollama-disabled.flag'
     if (Test-Path $ollamaFlag) { return }
     $ollamaAlive = Test-PortListening 11434

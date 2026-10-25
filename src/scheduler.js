@@ -2,6 +2,7 @@ import cron from 'node-cron'
 import config, { findRoomConfig } from './config-loader.js'
 import { logger } from './logger.js'
 import { generateOnce } from './ai.js'
+import { generateMorningBrief } from './reach/morning-brief.js'
 
 /**
  * 定时主动任务：按 config.proactive 里的 cron 表达式，
@@ -26,22 +27,30 @@ export function initScheduler(bot) {
     }
     cron.schedule(job.cron, async () => {
       try {
-        const room = await bot.Room.find({ topic: job.roomTopic }).catch(() => null)
+        let room = null
+        if (job.roomId) {
+          room = await bot.Room.find({ id: job.roomId }).catch(() => null)
+        }
+        if (!room && job.roomTopic) {
+          room = await bot.Room.find({ topic: job.roomTopic }).catch(() => null)
+        }
         if (!room) {
-          logger.warn(`定时任务找不到群"${job.roomTopic}"，请确认群名与 config.rooms 一致`)
+          logger.warn(`定时任务找不到群（roomId=${job.roomId || '无'}, topic=${job.roomTopic || '无'}），请确认群名或群ID与 config.rooms 一致`)
           return
         }
         let content
-        if (job.type === 'greeting') {
+        if (job.type === 'brief') {
+          content = await generateMorningBrief(job.prompt || '早上好！')
+        } else if (job.type === 'greeting') {
           content = job.prompt
         } else {
           content = await generateOnce(job.prompt)
         }
         if (content) {
           await room.say(content)
-          logger.info(`已向群"${job.roomTopic}"发送主动${job.type === 'greeting' ? '问候' : '话题'}: ${content.slice(0, 50)}`)
+          logger.info(`已向群"${job.roomTopic || job.roomId}"发送主动${job.type}: ${content.slice(0, 50)}`)
         } else {
-          logger.warn(`群"${job.roomTopic}"话题生成失败（Ollama 无响应），本次跳过`)
+          logger.warn(`群"${job.roomTopic || job.roomId}"内容生成失败，本次跳过`)
         }
       } catch (err) {
         logger.error(`定时任务执行失败: ${err?.stack || err}`)
@@ -55,10 +64,15 @@ export function initScheduler(bot) {
 export async function runProactiveOnce(bot, index) {
   const job = (config.proactive || [])[index]
   if (!job) throw new Error(`config.proactive[${index}] 不存在`)
-  const room = await bot.Room.find({ topic: job.roomTopic })
-  if (!room) throw new Error(`找不到群"${job.roomTopic}"`)
-  const content = job.type === 'greeting' ? job.prompt : await generateOnce(job.prompt)
-  if (!content) throw new Error('Ollama 生成失败')
+  let room = null
+  if (job.roomId) room = await bot.Room.find({ id: job.roomId }).catch(() => null)
+  if (!room && job.roomTopic) room = await bot.Room.find({ topic: job.roomTopic }).catch(() => null)
+  if (!room) throw new Error(`找不到群"${job.roomTopic || job.roomId}"`)
+  let content
+  if (job.type === 'brief') content = await generateMorningBrief(job.prompt || '早上好！')
+  else if (job.type === 'greeting') content = job.prompt
+  else content = await generateOnce(job.prompt)
+  if (!content) throw new Error('生成失败')
   await room.say(content)
   logger.info(`手动触发成功，已发送到群"${job.roomTopic}"`)
 }

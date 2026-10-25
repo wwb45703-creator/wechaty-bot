@@ -92,7 +92,18 @@ export async function handleSearchMessage(msg, room, query) {
   })
 
   if (!reply) {
-    await msg.say('（这次搜索处理失败了，稍后再试试？）').catch(() => {})
+    // AI 不可用时，直接把搜索结果列表发给用户，不要白白丢弃已抓取的内容
+    let fallback
+    if (found && found.results.length) {
+      const list = found.results.slice(0, 4)
+        .map((r, i) => `${i + 1}. ${r.title}${r.url ? `\n   ${r.url}` : ''}`)
+        .join('\n')
+      fallback = `🔍 「${query}」搜索结果：\n${list}`
+    } else {
+      fallback = `搜索「${query}」没找到结果，换个关键词试试？`
+    }
+    const prefix = room ? `@${name} ` : ''
+    await (room ? room.say(prefix + fallback, talker) : msg.say(fallback)).catch(() => {})
     return
   }
 

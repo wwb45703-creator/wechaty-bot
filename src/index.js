@@ -81,13 +81,25 @@ async function main() {
   logger.info('机器人已启动。请确保微信 3.9.10.27 客户端已在本机登录。')
 }
 
-process.on('SIGINT', async () => {
-  logger.info('收到退出信号，正在停止...')
-  try {
-    await bot.stop()
-  } catch {}
+async function shutdown(signal) {
+  logger.info(`收到 ${signal} 信号，正在停止...`)
+  try { await bot.stop() } catch {}
   try { fs.unlinkSync(path.join(__dirname, '..', 'state', 'bot.pid')) } catch {}
   process.exit(0)
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+
+// 兜底：未捕获异常只记日志，不让进程意外崩溃（Frida/Wechaty 偶发异步抛错）
+process.on('unhandledRejection', (reason) => {
+  logger.error(`未处理的 Promise 拒绝: ${reason?.stack || reason}`)
+})
+process.on('uncaughtException', (err) => {
+  logger.error(`未捕获的同步异常: ${err?.stack || err}`)
+  // 严重错误仍需退出，但先写日志确保记录
+  if (err?.code === 'ERR_IPC_DISCONNECTED' || err?.code === 'ECONNRESET') return
+  process.exit(1)
 })
 
 main().catch((err) => {

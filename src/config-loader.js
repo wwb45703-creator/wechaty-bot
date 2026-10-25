@@ -10,7 +10,24 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
 
 export default config
 
-/** 按群名查找该群的具体配置；没有返回 undefined（走默认值） */
-export function findRoomConfig(topic) {
-  return (config.rooms || []).find((r) => r.topic === topic)
+/** 按群对象、群名或群ID查找该群的具体配置；没有返回 undefined（走默认值） */
+export function findRoomConfig(topicOrRoom, roomId = '') {
+  let topic = ''
+  let id = roomId
+  if (topicOrRoom && typeof topicOrRoom === 'object') {
+    id = topicOrRoom.id || id
+    topic = topicOrRoom._topic || ''
+  } else if (typeof topicOrRoom === 'string') {
+    if (topicOrRoom.endsWith('@chatroom')) {
+      id = topicOrRoom
+    } else {
+      topic = topicOrRoom
+    }
+  }
+
+  return (config.rooms || []).find((r) => {
+    if (id && r.id && r.id === id) return true
+    if (topic && r.topic && r.topic === topic) return true
+    return false
+  })
 }

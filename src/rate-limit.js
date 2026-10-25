@@ -5,9 +5,19 @@
 const cooldowns = new Map() // key -> 上次回复时间戳
 const dailyCounts = new Map() // `date:key` -> 当日已回复条数
 
+/** 返回东八区（Asia/Shanghai）当前日期字符串，格式 YYYY-MM-DD */
 function today() {
-  return new Date().toISOString().slice(0, 10)
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 }
+
+// 每小时清理过期的 cooldowns 条目（避免长期运行后 Map 无限累积）
+// 保守清理：删除超过 2 小时未活动的条目（最大冷却时间通常不超过 300s）
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000
+  for (const [k, ts] of cooldowns.entries()) {
+    if (ts < cutoff) cooldowns.delete(k)
+  }
+}, 60 * 60 * 1000).unref()
 
 /**
  * @param {string} key        会话 key

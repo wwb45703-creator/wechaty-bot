@@ -51,11 +51,20 @@ ok('公网页面抓取', page.ok === true, page.ok ? `kind=${page.kind} 摘要�
 if (page.ok) {
   initAi(config)
   const summary = page.summary.length > 600 ? page.summary.slice(0, 600) + '……' : page.summary
-  const reply = await chat({
-    key: 'link-once-test-' + Date.now(),
-    userText: `鹅王 分享了一个链接，内容如下：\n${summary}\n\n直接输出你对这个链接内容的点评或吐槽（一两句话），只输出点评内容本身，不要任何开场白或说明。`,
-    systemExtra: '当前是微信群"mc喵"的群聊，鹅王 分享了一个链接，你看完内容后主动点评。回复会自动@鹅王。',
-  })
+  let reply = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      reply = await chat({
+        key: 'link-once-test-' + Date.now(),
+        userText: `鹅王 分享了一个链接，内容如下：\n${summary}\n\n直接输出你对这个链接内容的点评或吐槽（一两句话），只输出点评内容本身，不要任何开场白或说明。`,
+        systemExtra: '当前是微信群"mc喵"的群聊，鹅王 分享了一个链接，你看完内容后主动点评。回复会自动@鹅王。',
+      })
+      if (reply) break
+    } catch (e) {
+      // 容错短暂的 warm-up
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
   ok('AI 人设回复生成', Boolean(reply), reply ? reply.slice(0, 80) : '(null)')
   // 回复不应包含特殊 token 残留或元话语
   ok('回复无特殊 token 残留', reply && !/\|im_end\||\|im_start\|/.test(reply))

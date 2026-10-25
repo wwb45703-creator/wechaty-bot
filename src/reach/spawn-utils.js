@@ -9,7 +9,7 @@
  *    看门狗/计划任务启动时用户 PATH 可能与交互终端不同）
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import config from '../config-loader.js'
 
 /** 子进程环境：PATH 前置 binPaths，强制 Python 子进程 UTF-8 输出（Windows 默认 GBK） */
@@ -47,9 +47,20 @@ export function runCli(cmd, args, opts = {}) {
     let stderr = ''
     let timedOut = false
     let settled = false
+    function killTree(c) {
+      if (!c || !c.pid) return
+      if (process.platform === 'win32') {
+        try {
+          execSync(`taskkill /F /T /PID ${c.pid}`, { stdio: 'ignore', windowsHide: true })
+        } catch { /* 进程可能已退出 */ }
+      } else {
+        try { c.kill('SIGKILL') } catch {}
+      }
+    }
+
     const timer = setTimeout(() => {
       timedOut = true
-      try { child.kill('kill') } catch { /* 已退出 */ }
+      killTree(child)
     }, timeoutMs)
     child.stdout.on('data', (d) => {
       if (stdout.length < maxChars) stdout += d.toString()
@@ -72,12 +83,14 @@ export function runCli(cmd, args, opts = {}) {
   })
 }
 
-/** 探测命令是否在 PATH（结果进程内缓存，防反复 spawn where） */
-const cliCache = new Map()
+/** 探测命令是否在 PATH（结果进程内缓存 1 小时，防反复 spawn where） */
+const cliCache = new Map() // cmd -> { ok, expiresAt }
 export async function hasCli(cmd) {
-  if (cliCache.has(cmd)) return cliCache.get(cmd)
+  const now = Date.now()
+  const cached = cliCache.get(cmd)
+  if (cached && cached.expiresAt > now) return cached.ok
   const r = await runCli('where', [cmd], { timeoutMs: 5000, maxChars: 4000 })
   const ok = r.code === 0 && r.stdout.trim().length > 0
-  cliCache.set(cmd, ok)
+  cliCache.set(cmd, { ok, expiresAt: now + 3600 * 1000 })
   return ok
 }

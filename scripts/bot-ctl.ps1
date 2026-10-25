@@ -70,7 +70,8 @@ switch ($Action.ToLower()) {
         }
         # kill bot node only (never other node.exe like MCP servers)
         Get-BotProc | ForEach-Object {
-            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Output "[stop] 已结束机器人进程 $($_.ProcessId)" } catch {}
+            $botId = if ($_.Id) { $_.Id } else { $_.ProcessId }
+            try { Stop-Process -Id $botId -Force -ErrorAction Stop; Write-Output "[stop] 已结束机器人进程 $botId" } catch {}
         }
         # stop ollama
         if (@(Get-Process -Name 'ollama' -ErrorAction SilentlyContinue).Count -gt 0) {

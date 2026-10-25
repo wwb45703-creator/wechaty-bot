@@ -1,10 +1,9 @@
 import config from '../config-loader.js'
 import { logger } from '../logger.js'
-import { chat, extractFacts } from '../ai.js'
+import { chat, extractFacts, resetConversation, isAiDisabled } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
 import { splitBubbles, sendBubbles } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
-import { resetConversation } from '../ai.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 
 /**
@@ -103,16 +102,18 @@ export async function handlePrivateMessage(msg) {
     recordReply(key, config.private?.dailyLimit ?? 200)
     // 回复完成后，后台提取长期记忆（不阻塞回复）
     if (isMemoryEnabled()) {
+      const requestedAt = Date.now()
       setImmediate(() => {
-        extractFacts({ userText: text, assistantReply: reply }).then((facts) => {
+        extractFacts({ userText: text, assistantReply: reply }).then(async (facts) => {
           if (facts && facts.length) {
-            const added = appendFacts(memRef, facts, alias || name)
+            const added = await appendFacts(memRef, facts, alias || name, requestedAt)
             if (added) logger.info(`长期记忆 +${added}（私聊 ${alias || name}）`)
           }
         }).catch((e) => logger.warn(`记忆提取/写盘失败（私聊）: ${e?.message || e}`))
       })
     }
   } else {
-    await msg.say(config.ai?.fallbackReply).catch(() => {})
+    const fallbackText = isAiDisabled() ? '（AI 对话服务暂时未开启）' : config.ai?.fallbackReply
+    await msg.say(fallbackText).catch(() => {})
   }
 }

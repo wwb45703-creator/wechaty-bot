@@ -11,10 +11,12 @@
 import dns from 'node:dns'
 import { logger } from './logger.js'
 
-/** 从文本中提取第一个 http(s) 链接（排除中文标点结尾） */
+/** 从文本中提取第一个 http(s) 链接（排除中文标点结尾，以及英文末尾标点如句号/括号） */
 export function extractFirstUrl(text) {
   const m = String(text || '').match(/https?:\/\/[^\s<>"'，。；！？、）】》]+/i)
-  return m ? m[0] : null
+  if (!m) return null
+  // 去掉末尾可能被误包含的英文标点（如句末的 . ? ! , ) ]）
+  return m[0].replace(/[,.!?:;)\]]+$/, '')
 }
 
 /** IPv4/IPv6 是否属于私有/保留网段 */

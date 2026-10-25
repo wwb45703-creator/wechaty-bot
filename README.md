@@ -16,6 +16,20 @@
 
 ---
 
+## 📚 文档索引（新会话/交接必读）
+
+| 文档 | 内容 |
+|---|---|
+| `AGENTS.md` | **AI 助手开发硬规则**（环境铁律/启停/代码约定/安全/git 纪律） |
+| `docs/HANDOFF.md` | 交接快照：当前状态、验证结果、接管步骤 |
+| `docs/ARCHITECTURE.md` | 架构设计、模块说明、消息数据流 |
+| `docs/DECISIONS.md` | 重大技术决策及原因 |
+| `docs/PROGRESS.md` | 功能完成度、已知问题、后续任务 |
+| `使用说明.md` | 用户日常操作速查（启停/命令/排障） |
+| `docs/INSTALL-full.md` / `docs/INSTALL-lite.md` | 分发安装包版安装文档（Full 含看图，Lite 精简） |
+| `docs/微信联网功能使用指南.md` | reach 联网玩法用户文档 |
+| `ui/CONTRACT.md` | 控制台 UI 的 IPC 契约 |
+
 以下为本机部署的完整配置文档。
 
 ## ⭐ 开关与启动（重要，照这个来）
@@ -59,7 +73,7 @@
 | Node.js 18（便携版） | ✅ 已装 | `D:\wechaty-bot\runtime\node18\` |
 | npm 依赖（wechaty + puppet-xp + node-cron） | ✅ 已装 | `D:\wechaty-bot\node_modules\` |
 | Ollama + gpt-oss:20b 模型 | ✅ 已装 | `D:\Ollama`，模型在 `D:\OllamaModels` |
-| 微信 3.9.10.27 | ⬜ 需要安装 | 安装包在 `D:\wechaty-bot\downloads\` |
+| 微信 3.9.10.27 | ✅ 已装 | `D:\Apps\WeChat3.9`（junction：`C:\Program Files\Tencent\WeChat`） |
 
 > **为什么必须用微信 3.9.10.27？** 免费本地方案 wechaty-puppet-xp 通过 Frida 注入微信桌面客户端实现，只适配特定版本。当前版本对应关系：puppet-xp 2.1.1 ↔ 微信 3.9.10.27。**请勿让微信自动升级**（登录后进入 设置→关于微信 关闭自动更新；升级后机器人会失效）。
 
@@ -67,9 +81,9 @@
 
 1. **安装微信 3.9.10.27**
    - 双击 `downloads\WeChatSetup-3.9.10.27.exe`
-   - 安装界面把路径改到 **E 盘**（如 `D:\Apps\WeChat`），别装 C 盘
+   - 安装路径选 `D:\Apps\WeChat`（**本机已完成**，此步仅重装时参考），别装 C 盘
    - 登录后：设置 → 关于微信 → 关闭"有更新时自动升级"
-   - （可选）设置 → 文件管理 → 把存储位置改到 E 盘
+   - （可选）设置 → 文件管理 → 存储位置（本机已重定向到 `D:\Users\wwb\Documents\WeChat Files`）
 2. **火绒添加信任区**（重要，否则注入会被拦截）
    - 打开火绒 → 病毒查杀 → 信任区
    - 添加目录：`D:\wechaty-bot`（整个目录）和微信安装目录（如 `D:\Apps\WeChat`）
@@ -122,6 +136,11 @@
 - 安全：内网/环回/私有地址、非 http(s) 协议自动拒绝（SSRF 防护）；抓取限 400KB、20 秒超时
 - 配置：`links` 段（`enabled` / `cooldownSeconds` 默认 30 / `timeoutSeconds` / `maxBytes` / `summaryChars`）
 - 未登记的群里链接不自动处理（维持 @ 触发逻辑）
+
+### 联网增强（reach 层，2026-10-03 上线）
+- 抓取链五层降级：L0 平台 API（B站/yt-dlp/V2EX/gh）→ L1 原生 fetch → L2 Scrapling（Python，本机已装）→ L3 Jina（默认关）→ L4 无头浏览器（可选），全链 45 秒预算
+- **聊天搜索**：发「搜一下 XX」即返回搜索结果点评（必应+B站），群聊需 @/唤醒词触发
+- 开关与可选依赖见 `config.json` 的 `reach` 段；玩法示例见 `docs/微信联网功能使用指南.md`
 
 ### 关键词
 - 发送 `ding` → 回复 `dong`（连通性自测）

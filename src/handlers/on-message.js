@@ -11,6 +11,20 @@ import { checkRoomTrigger } from './room.js'
 /**
  * 消息总入口：只处理文本消息，按私聊/群聊分流
  */
+/** 统一准入检查：私聊查白名单，群聊查是否在 config.rooms 登记（支持 roomId 或 topic 匹配） */
+async function isAdmitted(msg, room) {
+  if (room) {
+    const topic = await room.topic().catch(() => '')
+    return Boolean(findRoomConfig(topic, room.id))
+  }
+  const t0 = msg.talker()
+  const wl = config.private?.whitelist || []
+  if (wl.length === 0) return true
+  const name = t0.name()
+  const alias = await t0.alias().catch(() => '')
+  return wl.includes(name) || (alias && wl.includes(alias))
+}
+
 export async function onMessage(msg) {
   try {
     if (msg.self()) return // 忽略机器人自己发的
@@ -22,15 +36,9 @@ export async function onMessage(msg) {
 
     // 看图说话：图片消息单独走视觉链路（准入与文本一致：私聊白名单、群聊仅已登记群）
     if (type === types.Message.Image && isVisionEnabled()) {
-      let admitted
-      if (room) {
-        admitted = Boolean(findRoomConfig(await room.topic().catch(() => '')))
-      } else {
-        const t0 = msg.talker()
-        const wl = config.private?.whitelist || []
-        admitted = wl.length === 0 || wl.includes(t0.name()) || wl.includes(await t0.alias().catch(() => ''))
+      if (await isAdmitted(msg, room)) {
+        await handleImageMessage(msg, room)
       }
-      if (admitted) await handleImageMessage(msg, room)
       return // 图片消息不落入文本链路
     }
 
@@ -43,15 +51,11 @@ export async function onMessage(msg) {
     // 放在链接分支之前，防止含 URL 的搜索词被链接处理截走
     const searchQuery = detectSearchIntent(text)
     if (searchQuery) {
-      let admitted
-      if (room) {
+      let admitted = await isAdmitted(msg, room)
+      if (admitted && room) {
         const topic = await room.topic().catch(() => '')
-        const rc = findRoomConfig(topic)
+        const rc = findRoomConfig(topic, room.id)
         admitted = Boolean(rc) && (await checkRoomTrigger(msg, text, rc)).triggered
-      } else {
-        const t0 = msg.talker()
-        const wl = config.private?.whitelist || []
-        admitted = wl.length === 0 || wl.includes(t0.name()) || wl.includes(await t0.alias().catch(() => ''))
       }
       if (admitted) {
         await handleSearchMessage(msg, room, searchQuery)
@@ -62,17 +66,10 @@ export async function onMessage(msg) {
 
     // 链接识别：消息含 URL 时优先走抓取回复
     // 准入检查（与文本一致）：私聊白名单、群聊仅 config.rooms 已登记的群
-    const isLinkCandidate = hasProcessableLink(text, room ? await room.topic().catch(() => '') : null)
+    const roomTopic = room ? await room.topic().catch(() => '') : null
+    const isLinkCandidate = hasProcessableLink(text, roomTopic, room?.id)
     if (isLinkCandidate) {
-      let admitted
-      if (room) {
-        admitted = Boolean(findRoomConfig(await room.topic().catch(() => '')))
-      } else {
-        const t0 = msg.talker()
-        const wl = config.private?.whitelist || []
-        admitted = wl.length === 0 || wl.includes(t0.name()) || wl.includes(await t0.alias().catch(() => ''))
-      }
-      if (!admitted) {
+      if (!(await isAdmitted(msg, room))) {
         logger.info(`[链接] 未准入（白名单/登记群限制），忽略: ${String(text).slice(0, 40)}`)
         return
       }

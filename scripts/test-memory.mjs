@@ -24,7 +24,7 @@ async function runRound(tag) {
   const r1 = await chat({ key: KEY, userText: '我叫小王，今年17岁，在读高中，我养了一只叫煤球的黑猫，周末都在打原神。', memoryText: '' })
   console.log('回复1:', (r1 || '(失败)').slice(0, 80))
   const facts = await extractFacts({ userText: '我叫小王，今年17岁，在读高中，我养了一只叫煤球的黑猫，周末都在打原神。', assistantReply: r1 || '' })
-  const added = appendFacts(REF, facts || [], '测试用户')
+  const added = await appendFacts(REF, facts || [], '测试用户')
   console.log(`提取要点 ${facts?.length ?? 0} 条，落盘 ${added} 条`)
   if (!added) {
     console.log('❌ 没有提取到记忆，测试失败')

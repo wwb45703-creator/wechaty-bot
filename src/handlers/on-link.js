@@ -21,18 +21,22 @@ function linksConf() {
   return config.links || {}
 }
 
-/** 该群是否开启链接自动识别（私聊 roomTopic 为 null，恒启用） */
-export function isLinkEnabledFor(roomTopic) {
+/** 该群是否开启链接自动识别（私聊 roomTopic/roomId 为空，恒启用） */
+export function isLinkEnabledFor(roomTopic, roomId = '') {
   const lc = linksConf()
   if (lc.enabled === false) return false
-  if (!roomTopic) return true // 私聊直接启用
-  // 群聊只对 config.rooms 登记过的群生效
-  return (config.rooms || []).some((r) => r.topic === roomTopic)
+  if (!roomTopic && !roomId) return true // 私聊直接启用
+  // 群聊对 config.rooms 登记过的群生效（支持 roomId 或 topic）
+  return (config.rooms || []).some((r) => {
+    if (roomId && r.id && r.id === roomId) return true
+    if (roomTopic && r.topic && r.topic === roomTopic) return true
+    return false
+  })
 }
 
 /** 消息文本是否值得走链接处理（含 URL 且功能开启） */
-export function hasProcessableLink(text, roomTopic) {
-  if (!isLinkEnabledFor(roomTopic)) return false
+export function hasProcessableLink(text, roomTopic, roomId = '') {
+  if (!isLinkEnabledFor(roomTopic, roomId)) return false
   return Boolean(extractFirstUrl(text))
 }
 
@@ -97,7 +101,17 @@ export async function handleLinkMessage(msg, room, text) {
   })
 
   if (!reply) {
-    await msg.say('（这个链接我处理失败了，等你换个链接试试）').catch(() => {})
+    if (page.ok && page.summary) {
+      // AI 不可用时，直接将抓取到的内容摘要发给用户，避免有效内容被白白丢弃
+      const prefix = room ? `@${name} ` : ''
+      const tag = page.kind === 'video' ? '🎬 【视频信息】' : '📄 【网页摘要】'
+      const cleanSummary = page.summary.length > 300 ? page.summary.slice(0, 300) + '……' : page.summary
+      const fallback = `${tag}\n${cleanSummary}`
+      await (room ? room.say(prefix + fallback, talker) : msg.say(fallback)).catch(() => {})
+    } else {
+      await msg.say('（这个链接我处理失败了，等你换个链接试试）').catch(() => {})
+    }
+    recordReply(key, 0)
     return
   }
 

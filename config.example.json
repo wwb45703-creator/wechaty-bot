@@ -24,10 +24,14 @@
   },
   "rooms": [
     {
-      "topic": "你的群名",
-      "mode": "mention",
-      "wakeWords": ["小助手"],
+      "id": "xxxx@chatroom",
+      "topic": "你的群名（id 和 topic 二选一或都写，优先按 id 匹配防改名）",
       "enabled": true,
+      "mode": "mention",
+      "wakeWords": ["小助手", "小猫", "bot"],
+      "prefixes": ["?", "？", "!", "！", "/"],
+      "smartQuestion": false,
+      "randomRate": 0.0,
       "cooldownSeconds": 4
     }
   ],
@@ -95,6 +99,11 @@
     },
     "browser": {
       "enabled": true
+    },
+    "agentReach": {
+      "enabled": true,
+      "command": "agent-reach",
+      "timeoutSeconds": 25
     },
     "scrapling": {
       "enabled": true,
