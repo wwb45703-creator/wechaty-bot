@@ -8,6 +8,14 @@
  *  4. 绝不把短期情绪直接等同于长期性格变化
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const rootDir = path.resolve(__dirname, '..', '..')
+const EMOTION_FILE = path.join(rootDir, 'state', 'emotion-state.json')
+
 const BASELINE = {
   pleasure: 0,     // 愉悦度 (-50 ~ +50, 0 为平和)
   arousal: 50,     // 兴奋度 (0 ~ 100, 50 为正常适中)
@@ -18,6 +26,33 @@ const BASELINE = {
 /** 内存单例：当前情绪状态 */
 let currentEmotion = { ...BASELINE }
 let lastStimulusTime = Date.now()
+
+// 启动时尝试从磁盘恢复
+try {
+  if (fs.existsSync(EMOTION_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(EMOTION_FILE, 'utf8'))
+    if (saved && typeof saved.pleasure === 'number') {
+      currentEmotion = {
+        pleasure: Math.max(-50, Math.min(50, saved.pleasure)),
+        arousal: Math.max(0, Math.min(100, saved.arousal ?? BASELINE.arousal)),
+        tension: Math.max(0, Math.min(100, saved.tension ?? BASELINE.tension)),
+        fatigue: Math.max(0, Math.min(100, saved.fatigue ?? BASELINE.fatigue)),
+      }
+      if (typeof saved.lastStimulusTime === 'number') {
+        lastStimulusTime = saved.lastStimulusTime
+      }
+    }
+  }
+} catch {}
+
+function saveEmotion() {
+  try {
+    fs.mkdirSync(path.dirname(EMOTION_FILE), { recursive: true })
+    const tmp = `${EMOTION_FILE}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify({ ...currentEmotion, lastStimulusTime, updatedAt: new Date().toISOString() }, null, 2), 'utf8')
+    fs.renameSync(tmp, EMOTION_FILE)
+  } catch {}
+}
 
 /**
  * 稳态衰减回归（计算随时间向基线的自然恢复）
@@ -64,6 +99,7 @@ export function applyStimulus({ pleasureDelta = 0, arousalDelta = 0, tensionDelt
   currentEmotion.fatigue = Math.max(0, Math.min(100, currentEmotion.fatigue + fatigueDelta))
 
   lastStimulusTime = Date.now()
+  saveEmotion()
 }
 
 /**
@@ -111,6 +147,7 @@ export function getEmotionState() {
 export function resetEmotion() {
   currentEmotion = { ...BASELINE }
   lastStimulusTime = Date.now()
+  saveEmotion()
 }
 
 /**

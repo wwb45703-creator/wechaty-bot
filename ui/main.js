@@ -621,6 +621,155 @@ ipcMain.handle('deleteMemory', async (_event, rel) => {
   }
 });
 
+// 获取记忆档案详情
+ipcMain.handle('getMemoryDetail', async (_event, rel) => {
+  try {
+    const relStr = String(rel || '');
+    if (!/^[\w][\w\-./]{0,120}\.json$/i.test(relStr) || relStr.includes('..')) {
+      return { ok: false, error: '非法路径' };
+    }
+    const root = path.resolve('D:\\wechaty-bot\\memories');
+    const target = path.resolve(root, relStr);
+    if (target !== root && target.startsWith(root + path.sep) && fs.existsSync(target)) {
+      const content = JSON.parse(fs.readFileSync(target, 'utf8'));
+      return { ok: true, data: content };
+    }
+    return { ok: false, error: '记忆档案不存在' };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// ==================== 人格演化 / 情绪 / 关系网络 IPC ====================
+
+// 读取当前人格状态 (state/persona-state.json)
+ipcMain.handle('getPersonaState', async () => {
+  try {
+    const file = path.join(PROJECT_ROOT, 'state', 'persona-state.json');
+    if (!fs.existsSync(file)) {
+      return { ok: false, error: '人格状态文件不存在' };
+    }
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { ok: true, persona: data };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 读取当前短期情绪 (state/emotion-state.json)
+ipcMain.handle('getEmotionState', async () => {
+  try {
+    const file = path.join(PROJECT_ROOT, 'state', 'emotion-state.json');
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return { ok: true, emotion: data };
+    }
+    return {
+      ok: true,
+      emotion: {
+        pleasure: 0,
+        arousal: 50,
+        tension: 20,
+        fatigue: 0,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 读取演化审计日志 (logs/persona-evolution.log 尾部 limit 条)
+ipcMain.handle('getPersonaHistory', async (_event, limit = 30) => {
+  try {
+    const file = path.join(PROJECT_ROOT, 'logs', 'persona-evolution.log');
+    if (!fs.existsSync(file)) {
+      return { ok: true, history: [] };
+    }
+    const content = fs.readFileSync(file, 'utf8');
+    const lines = content.trim().split(/\r?\n/).filter(Boolean);
+    const slice = lines.slice(-Math.min(Math.max(1, limit), 200));
+    const history = slice.map((line) => {
+      const match = line.match(/^\[(.*?)\]\s+\[EVOLUTION\]\s+(.*)$/);
+      if (!match) return { raw: line, timestamp: '' };
+      const timestamp = match[1];
+      const rest = match[2];
+
+      const eventMatch = rest.match(/事件=(\S+)/);
+      const reasonMatch = rest.match(/原因=([^\[]+)/);
+      const changeMatch = rest.match(/\[(.*?)\]/);
+      const roomMatch = rest.match(/room=(\S+)/);
+      const userMatch = rest.match(/user=(\S+)/);
+
+      return {
+        timestamp,
+        event: eventMatch ? eventMatch[1] : '',
+        reason: reasonMatch ? reasonMatch[1].trim() : '',
+        change: changeMatch ? changeMatch[1] : '',
+        room: roomMatch ? roomMatch[1] : '',
+        user: userMatch ? userMatch[1] : '',
+        raw: line,
+      };
+    }).reverse();
+    return { ok: true, history };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 列出所有成员关系画像 (state/relationships/)
+ipcMain.handle('listRelationships', async (_event, scene) => {
+  try {
+    const dir = path.join(PROJECT_ROOT, 'state', 'relationships');
+    if (!fs.existsSync(dir)) return { ok: true, list: [] };
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const list = [];
+    for (const f of files) {
+      try {
+        const full = path.join(dir, f);
+        const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+        if (data && data.userId) {
+          list.push(data);
+        }
+      } catch {}
+    }
+    list.sort((a, b) => (b.familiarity || 0) - (a.familiarity || 0));
+    return { ok: true, list };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 获取单个成员关系详情
+ipcMain.handle('getRelationship', async (_event, userId) => {
+  try {
+    const uid = String(userId || '').trim();
+    if (!/^[\w@.-]{1,64}$/.test(uid)) return { ok: false, error: '非法用户标识' };
+    const file = path.join(PROJECT_ROOT, 'state', 'relationships', `${uid}.json`);
+    if (!fs.existsSync(file)) return { ok: false, error: '关系档案不存在' };
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+// 删除单个成员关系档案
+ipcMain.handle('deleteRelationship', async (_event, userId) => {
+  try {
+    const uid = String(userId || '').trim();
+    if (!/^[\w@.-]{1,64}$/.test(uid)) return { ok: false, error: '非法用户标识' };
+    const file = path.join(PROJECT_ROOT, 'state', 'relationships', `${uid}.json`);
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
+      return { ok: true };
+    }
+    return { ok: false, error: '文件不存在' };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
 // 完全关闭 Ollama：写独立停用标记（看门狗不再拉起）→ taskkill 全部 ollama 进程。
 // 注意：关闭后机器人将无法生成回复（视觉/文本都依赖 Ollama）。
 ipcMain.handle('stopOllama', async () => {

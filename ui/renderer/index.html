@@ -28,10 +28,25 @@
       <button class="nav-item" data-page="chat">
         <span class="nav-icon">💬</span><span>测试对话</span>
       </button>
+      <button class="nav-item" data-page="persona">
+        <span class="nav-icon">✨</span><span>人格状态</span>
+      </button>
+      <button class="nav-item" data-page="relationships">
+        <span class="nav-icon">🌐</span><span>关系网络</span>
+      </button>
+      <button class="nav-item" data-page="memories">
+        <span class="nav-icon">📚</span><span>记忆档案</span>
+      </button>
       <button class="nav-item" data-page="about">
         <span class="nav-icon">ℹ️</span><span>关于</span>
       </button>
-      <div class="sidebar-footer">v1.0.0</div>
+
+      <div class="sidebar-bottom">
+        <button class="theme-toggle-btn" id="btn-theme-toggle" title="切换深色/浅色模式">
+          <span id="theme-icon">🌙</span> <span id="theme-text">深色模式</span>
+        </button>
+        <div class="sidebar-footer">v1.2.0</div>
+      </div>
     </nav>
 
     <!-- 右侧内容区 -->
@@ -45,6 +60,7 @@
               <div class="status-badges">
                 <span class="badge" id="badge-bot">检测中…</span>
                 <span class="badge badge-model" id="badge-model" title="当前模型">—</span>
+                <span class="badge badge-persona" id="badge-home-persona">人设：鹅王</span>
               </div>
             </div>
             <button class="power-btn" id="btn-power" title="启动机器人">
@@ -69,9 +85,53 @@
           </div>
         </div>
 
+        <!-- 情绪与演化仪表盘 -->
+        <div class="card dashboard-card">
+          <div class="status-row">
+            <div class="card-title">短期即时情绪与演化状态</div>
+            <span class="sub-hint" id="home-emotion-summary">情绪稳定，自然放松</span>
+          </div>
+          <div class="emotion-meter-grid">
+            <div class="emotion-meter">
+              <div class="emotion-label"><span>愉悦度</span><span id="home-val-pleasure">0</span></div>
+              <div class="progress-track"><div class="progress-bar bar-pleasure" id="bar-pleasure"></div></div>
+            </div>
+            <div class="emotion-meter">
+              <div class="emotion-label"><span>兴奋度</span><span id="home-val-arousal">50</span></div>
+              <div class="progress-track"><div class="progress-bar bar-arousal" id="bar-arousal"></div></div>
+            </div>
+            <div class="emotion-meter">
+              <div class="emotion-label"><span>紧张度</span><span id="home-val-tension">20</span></div>
+              <div class="progress-track"><div class="progress-bar bar-tension" id="bar-tension"></div></div>
+            </div>
+            <div class="emotion-meter">
+              <div class="emotion-label"><span>社交疲劳</span><span id="home-val-fatigue">0</span></div>
+              <div class="progress-track"><div class="progress-bar bar-fatigue" id="bar-fatigue"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近日志 -->
         <div class="card log-card">
-          <div class="card-title">最近日志</div>
-          <pre class="log-box" id="log-box">加载中…</pre>
+          <div class="log-header">
+            <div class="card-title" style="margin-bottom:0;">运行日志</div>
+            <div class="log-controls">
+              <label class="log-ctrl-item">
+                <span>行数:</span>
+                <select class="select-input" id="select-log-lines">
+                  <option value="30" selected>30 行</option>
+                  <option value="100">100 行</option>
+                  <option value="200">200 行</option>
+                </select>
+              </label>
+              <label class="log-ctrl-item checkbox-label">
+                <input type="checkbox" id="check-auto-scroll" checked>
+                <span>自动滚动</span>
+              </label>
+              <button class="btn ghost small" id="btn-refresh-log">刷新</button>
+            </div>
+          </div>
+          <div class="log-box" id="log-box">加载中…</div>
         </div>
       </section>
 
@@ -128,20 +188,121 @@
         </div>
       </section>
 
+      <!-- ===== 人格状态（新增） ===== -->
+      <section class="page" id="page-persona">
+        <div class="card">
+          <div class="status-row">
+            <div>
+              <div class="status-title" id="persona-title">拟真人格演化 · 鹅王</div>
+              <div class="status-badges">
+                <span class="badge ok" id="persona-gender">性别：男</span>
+                <span class="badge" id="persona-last-evolved">演化时间：—</span>
+              </div>
+            </div>
+            <button class="btn ghost" id="btn-refresh-persona">刷新状态</button>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <!-- 左：SVG 雷达图 -->
+          <div class="card radar-card">
+            <div class="card-title">五维性格雷达图</div>
+            <div class="radar-container" id="radar-container">
+              <svg id="radar-svg" viewBox="0 0 320 300" class="radar-svg"></svg>
+            </div>
+            <div class="radar-legend">
+              <span class="legend-item"><span class="legend-color baseline"></span>基线初始值</span>
+              <span class="legend-item"><span class="legend-color current"></span>当前演化值</span>
+            </div>
+          </div>
+
+          <!-- 右：性格数值条与安全边界 -->
+          <div class="card traits-card">
+            <div class="card-title">五维量化数值与稳态边界</div>
+            <div class="trait-bars-list" id="trait-bars-list">
+              <!-- JS 动态渲染五维数据 -->
+            </div>
+          </div>
+        </div>
+
+        <!-- 动态生长爱好 -->
+        <div class="card">
+          <div class="card-title">从聊天交互中萌芽生长的兴趣爱好</div>
+          <div class="hobbies-grid" id="hobbies-grid">
+            <!-- JS 动态填充爱好 -->
+          </div>
+        </div>
+
+        <!-- 演化审计记录 -->
+        <div class="card">
+          <div class="status-row">
+            <div class="card-title">最近人格演化日志（审计追踪）</div>
+            <span class="sub-hint">阻尼平滑更新 · 记录每次微小成长</span>
+          </div>
+          <div class="evolution-timeline" id="evolution-timeline">
+            <!-- JS 填充 -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 关系网络（新增） ===== -->
+      <section class="page" id="page-relationships">
+        <div class="card">
+          <div class="rel-toolbar">
+            <div class="status-title" style="margin-bottom:0;">成员交往关系画像</div>
+            <div class="rel-filter-row">
+              <input type="text" class="text-input" id="rel-search-input" placeholder="按昵称或微信 ID 过滤…" spellcheck="false">
+              <button class="btn ghost" id="btn-refresh-rel">刷新画像</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="relationships-grid" id="relationships-grid">
+          <!-- 动态卡片 -->
+        </div>
+      </section>
+
+      <!-- ===== 记忆档案（独立/新增） ===== -->
+      <section class="page" id="page-memories">
+        <div class="card">
+          <div class="memory-toolbar">
+            <div>
+              <div class="status-title" style="margin-bottom:6px;">长期三层记忆库</div>
+              <div class="small-note">支持短期情境、深度情景记忆与语义事实归纳隔离</div>
+            </div>
+            <div class="memory-filter-row">
+              <div class="tab-pills">
+                <button class="tab-pill active" data-mfilter="all">全部</button>
+                <button class="tab-pill" data-mfilter="room">群聊记忆</button>
+                <button class="tab-pill" data-mfilter="private">私聊记忆</button>
+              </div>
+              <input type="text" class="text-input" id="memory-search-input" placeholder="搜索记忆主体或关键词…" spellcheck="false">
+              <button class="btn ghost" id="btn-refresh-memories">刷新</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="memory-cards-grid" id="memory-cards-grid">
+          <!-- 动态记忆列表 -->
+        </div>
+      </section>
+
       <!-- ===== 关于 ===== -->
       <section class="page" id="page-about">
         <div class="card">
-          <div class="card-title">关于</div>
-          <div class="about-line">微信机器人控制台 v1.1.0</div>
+          <div class="card-title">关于控制台</div>
+          <div class="about-line">微信机器人控制台 v1.2.0</div>
           <div class="about-line">本地项目路径：D:\wechaty-bot</div>
-          <div class="about-line">AI 推理：本地 Ollama（聊天数据不出电脑）</div>
-          <div class="about-line">字体：MiSans（小米，免费商用）</div>
+          <div class="about-line">AI 推理引擎：本地 Ollama（数据 100% 离线留存本机，保护好友隐私）</div>
+          <div class="about-line">拟真交互架构：五维人格阻尼演化 + 短期弹性情绪 + 三层隔离记忆系统</div>
+          <div class="about-line">系统字体：MiSans（小米公司提供，免费商用）</div>
         </div>
+
         <div class="card">
           <div class="status-row">
             <div>
               <div class="card-title">开机自启</div>
-              <div class="small-note">登录 Windows 后自动启动机器人（微信仍需手动登录）</div>
+              <div class="small-note">登录 Windows 后静默拉起机器人（微信仍需保持桌面登录）</div>
             </div>
             <label class="switch">
               <input type="checkbox" id="switch-autostart">
@@ -149,28 +310,31 @@
             </label>
           </div>
         </div>
-        <div class="card">
-          <div class="status-row">
-            <div>
-              <div class="card-title">长期记忆管理</div>
-              <div class="small-note">机器人记住的每个人档案（memories 目录）</div>
-            </div>
-            <button class="btn ghost" id="btn-refresh-mem">刷新</button>
-          </div>
-          <div id="mem-list" class="mem-list">加载中…</div>
-        </div>
+
         <div class="card">
           <div class="card-title">使用提示</div>
-          <div class="about-line">• 主页大按钮控制机器人进程；关闭后看门狗不会再拉起</div>
-          <div class="about-line">• 切换模型后机器人会自动重启使新模型生效</div>
-          <div class="about-line">• 导入模型只认 .gguf 文件；导入完成后回到模型页点"设为当前"</div>
-          <div class="about-line">• 关闭本控制台不影响后台机器人继续运行</div>
+          <div class="about-line">• 主页大按钮一键启停机器人进程；关闭后看门狗不会再自动拉起</div>
+          <div class="about-line">• 切换模型后系统会自动安全重启使新模型与拟真人设生效</div>
+          <div class="about-line">• 控制台窗口可随时关闭，后台机器人保持静默持续服务</div>
         </div>
       </section>
     </main>
   </div>
 
-  <!-- 右上角 toast -->
+  <!-- 全局模态弹窗（查看成员关系/记忆详情） -->
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal-panel glass">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title">详情</div>
+        <button class="modal-close" id="btn-modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <!-- 弹窗内容 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 右上角 toast 提示 -->
   <div class="toast-box" id="toast-box"></div>
 
   <script src="app.js"></script>

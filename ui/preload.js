@@ -59,9 +59,18 @@ contextBridge.exposeInMainWorld('botctl', {
   getAutostart: (...args) => ipcRenderer.invoke('getAutostart', ...args),
   setAutostart: (...args) => ipcRenderer.invoke('setAutostart', ...args),
 
-  // 长期记忆管理 → {ok, list:[{rel, facts, updatedAt}]} / 删除 {ok}
+  // 长期记忆管理 → {ok, list:[{rel, facts, updatedAt}]} / 详情 {ok, data} / 删除 {ok}
   listMemories: (...args) => ipcRenderer.invoke('listMemories', ...args),
   deleteMemory: (...args) => ipcRenderer.invoke('deleteMemory', ...args),
+  getMemoryDetail: (...args) => ipcRenderer.invoke('getMemoryDetail', ...args),
+
+  // 人格演化 / 情绪 / 关系网络
+  getPersonaState: (...args) => ipcRenderer.invoke('getPersonaState', ...args),
+  getEmotionState: (...args) => ipcRenderer.invoke('getEmotionState', ...args),
+  getPersonaHistory: (...args) => ipcRenderer.invoke('getPersonaHistory', ...args),
+  listRelationships: (...args) => ipcRenderer.invoke('listRelationships', ...args),
+  getRelationship: (...args) => ipcRenderer.invoke('getRelationship', ...args),
+  deleteRelationship: (...args) => ipcRenderer.invoke('deleteRelationship', ...args),
 
   /**
    * 订阅主进程每 3 秒推送的状态（通道 'status'）。

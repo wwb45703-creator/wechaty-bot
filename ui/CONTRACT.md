@@ -110,6 +110,34 @@
 
 > 这是唯一**不遵循 `{ ok }` 包装**的通道：请用 `typeof r === 'string'` 判断是否选到了文件。
 
+### `botctl.getMemoryDetail(rel: string)` → `{ ok: true, data: object }`
+
+- 获取指定相对路径的长期记忆 JSON 全文内容。
+
+### `botctl.getPersonaState()` → `{ ok: true, persona: object }`
+
+- 读取 `state/persona-state.json`，包含当前五维人格特征（`traits`）、性格基线（`baselineTraits`）、波动安全边界（`traitBounds`）、动态生长爱好（`hobbies`）及最近演化时间戳。
+
+### `botctl.getEmotionState()` → `{ ok: true, emotion: object }`
+
+- 读取当前短期情绪状态快照（`pleasure` 愉悦度、`arousal` 兴奋度、`tension` 紧张度、`fatigue` 社交疲劳度）。
+
+### `botctl.getPersonaHistory(limit?: number)` → `{ ok: true, history: Array }`
+
+- 读取 `logs/persona-evolution.log` 最近演化审计日志并结构化解析返回（按时间倒序）。
+
+### `botctl.listRelationships()` → `{ ok: true, list: Array }`
+
+- 扫描 `state/relationships/` 目录，返回所有成员关系画像，按熟悉度（`familiarity`）倒序排列。
+
+### `botctl.getRelationship(userId: string)` → `{ ok: true, data: object }`
+
+- 获取指定成员的关系画像详情。
+
+### `botctl.deleteRelationship(userId: string)` → `{ ok: true }`
+
+- 删除指定成员的关系画像。
+
 ### `botctl.onStatus(callback: (status: Status) => void)` → `() => void`
 
 - 订阅每 3 秒一次的状态推送（通道 `'status'`）；
