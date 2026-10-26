@@ -125,9 +125,10 @@ var readWideString = function (address) {
     return readWStringPtr(address).readUtf16String();
 };
 var writeWStringPtr = function (str) {
-    // console.log(`输入字符串内容: ${str}`);
+    if (typeof str !== 'string') {
+        str = String(str || '');
+    }
     var strLength = str.length;
-    // console.log(`字符串长度: ${strLength}`);
     // 计算UTF-16编码的字节长度（每个字符2个字节）
     var utf16Length = strLength * 2;
     // 计算我们需要为字符串对象结构分配的总内存空间，结构包含：指针 (Process.pointerSize) + 长度 (4 bytes) + 容量 (4 bytes)
@@ -135,33 +136,20 @@ var writeWStringPtr = function (str) {
     // 为字符串数据和结构体分配连续的内存空间
     var totalSize = utf16Length + 2 + structureSize; // +2 用于 null 终止符
     var basePointer = Memory.alloc(totalSize);
+    basePointer.writeByteArray(Array(totalSize).fill(0)); // 显式置零防脏数据
     // 将结构体指针定位到分配的内存起始位置
     var structurePointer = basePointer;
-    // console.log(`字符串分配空间内存指针: ${structurePointer}`);
     // 将字符串数据指针定位到结构体之后的位置
     var stringDataPointer = basePointer.add(structureSize);
-    // console.log(`字符串保存地址指针: ${stringDataPointer}`);
     // 将 JavaScript 字符串转换成 UTF-16 编码格式，并写入分配的内存空间
     stringDataPointer.writeUtf16String(str);
-    // console.log(`写入字符串到地址: ${stringDataPointer.readUtf16String()}`);
-    // 检查分配的内存内容
-    var allocatedMemoryContent = stringDataPointer.readUtf16String();
-    // console.log(`检查分配的内存内容: ${allocatedMemoryContent}`);
     // 在分配的内存空间中写入字符串对象的信息
     // 写入字符串数据指针
     structurePointer.writePointer(stringDataPointer);
-    // console.log(`写入字符串地址存放指针: ${structurePointer.readPointer()}`);
-    // console.log(`写入字符串内容确认: ${structurePointer.readPointer().readUtf16String()}`);
     // 写入字符串长度（确保是长度，不包含 null 终止符）
     structurePointer.add(Process.pointerSize).writeU32(strLength);
-    // console.log(`写入字符串长度指针: ${structurePointer.add(Process.pointerSize)}`);
     // 写入字符串容量，这里我们假设容量和长度是相同的
     structurePointer.add(Process.pointerSize + 4).writeU32(strLength);
-    // console.log(`写入字符串容量指针: ${structurePointer.add(Process.pointerSize + 4)}`);
-    // console.log(`写入字符串内容再次确认: ${structurePointer.readPointer().readUtf16String()}`);
-    // console.log(`写入字符地址再次确认: ${structurePointer.readPointer()}`);
-    // console.log(`读取32位测试: ${structurePointer.readPointer().readS32()}`);
-    // console.log(`return写入字符串结构体: ${structurePointer}`);
     // 返回分配的结构体表面的起始地址
     return structurePointer;
 };

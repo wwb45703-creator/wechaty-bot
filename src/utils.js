@@ -46,9 +46,13 @@ export async function sendBubbles(send, texts, delayRange) {
     const [lo, hi] = delayRange
     await sleep((lo + Math.random() * (hi - lo)) * 1000)
   }
-  const list = Array.isArray(texts) && texts.length > 0 ? texts : ['']
+  const list = Array.isArray(texts) && texts.length > 0 ? texts : []
+  let sentCount = 0
   for (let i = 0; i < list.length; i++) {
-    if (i > 0) await sleep(400 + Math.random() * 300)
-    await send(list[i], i)
+    const item = String(list[i] || '').trim()
+    if (!item) continue
+    if (sentCount > 0) await sleep(400 + Math.random() * 300)
+    await send(item, sentCount)
+    sentCount++
   }
 }

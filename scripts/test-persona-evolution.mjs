@@ -230,6 +230,9 @@ ok('杂鱼🐟喵群为 mode: all', room1?.mode === 'all' && room1?.atSender ===
 const room2 = findRoomConfig('最难不过坚持')
 ok('最难不过坚持群配置存在且为 mode: all', room2?.mode === 'all' && room2?.atSender === false)
 
+const room3 = findRoomConfig('G.T.I干员内部群')
+ok('G.T.I干员内部群配置存在且为 mode: all', room3?.mode === 'all' && room3?.atSender === false)
+
 // 模拟发言触发测试
 function mockMsg(text, isSelf = false) {
   return {
@@ -248,6 +251,9 @@ ok('杂鱼🐟喵群普通发言免@触发', trigRoom1.triggered === true)
 
 const trigRoom2 = await checkRoomTrigger(mockMsg('今天打瓦打得真爽'), '今天打瓦打得真爽', room2)
 ok('最难不过坚持群普通发言免@触发', trigRoom2.triggered === true)
+
+const trigRoom3 = await checkRoomTrigger(mockMsg('今晚干员集合打三角洲'), '今晚干员集合打三角洲', room3)
+ok('G.T.I干员内部群普通发言免@触发', trigRoom3.triggered === true)
 
 const trigSelf = await checkRoomTrigger(mockMsg('这是我自己的发言', true), '这是我自己的发言', room2)
 ok('最难不过坚持群自身发言绝对阻断', trigSelf.triggered === false)

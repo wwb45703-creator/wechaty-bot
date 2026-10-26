@@ -269,6 +269,8 @@ export async function handleRoomMessage(msg, room) {
     // @ 提醒只在需要时首条添加；AI 内容里的 @xx 全部剥离（防 "@额 @额" 叠加）
     await sendBubbles(async (t, i) => {
       const clean = stripAtMentions(t, [name, selfName].filter(Boolean))
+      if (!clean) return
+      logger.info(`[回复群] 群[${topic}] -> ${clean.slice(0, 60)}`)
       if (i === 0 && shouldAt) await room.say(`@${name} ${clean}`, talker)
       else await room.say(clean)
     }, bubbles, config.ai?.replyDelaySeconds)
