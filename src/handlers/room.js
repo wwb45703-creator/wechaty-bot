@@ -6,6 +6,9 @@ import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 import { reflectOnMemories } from '../personality/reflection.js'
+import { recordGroupMessage } from '../personality/linguistic-mirror.js'
+import { detectImplicitSearchIntent } from './search.js'
+import { webSearch } from '../reach/search.js'
 
 /**
  * 群聊自动回复：
@@ -133,6 +136,9 @@ export async function handleRoomMessage(msg, room) {
   const text = msg.text().trim()
   if (!text) return
 
+  // 记录本群真实发言，推进群聊语言镜像自适应（吸收本群高频口头禅）
+  recordGroupMessage(room.id, text)
+
   const topic = await room.topic().catch(() => '(未知群名)')
   const rc = findRoomConfig(topic, room.id)
   if (rc && rc.enabled === false) return
@@ -228,9 +234,24 @@ export async function handleRoomMessage(msg, room) {
   }
 
   const shouldAt = rc?.atSender === false ? false : (rc?.atSender === true || triggerReason === 'mention')
-  const systemExtra = shouldAt
+  let systemExtra = shouldAt
     ? `当前是微信群"${topic}"的群聊，多个成员一起聊天，你回复时会自动@说话的人。请针对 ${name} 的问题自然地接话。`
     : `当前是微信群"${topic}"的群聊，你作为一个群成员像真实网友打字一样自然参与群聊交流，不要机械地@对方，直接像普通群友一样自然地接话。`
+
+  // 类 Grok 隐式时效性搜索意图检测与自动事实注入（免唤醒词）
+  const implicitQuery = detectImplicitSearchIntent(question)
+  if (implicitQuery) {
+    try {
+      const searchRes = await webSearch(implicitQuery, { numResults: 3, timeoutMs: 8000 })
+      if (searchRes && Array.isArray(searchRes.results) && searchRes.results.length > 0) {
+        const facts = searchRes.results.slice(0, 3).map((r, i) => `${i + 1}. ${r.title}: ${r.snippet || ''}`).join('\n')
+        systemExtra += `\n\n【后台实时联网检索到的最新资讯（类Grok自动吃瓜事实）】\n${facts}\n请以“鹅王”的松弛吃瓜网友口吻回复，自然融入上述最新事实进行调侃吐槽，严禁机械报菜名。`
+        logger.info(`[隐式搜索] 命中时效性意图 [${implicitQuery}]，已自动注入 ${searchRes.results.length} 条实时事实`)
+      }
+    } catch (e) {
+      logger.warn(`[隐式搜索] 自动检索异常: ${e.message}`)
+    }
+  }
 
   const memoryText = isMemoryEnabled() ? formatForPrompt(memRef, config.memory?.maxFacts ?? 15) : ''
   const reply = await chat({

@@ -4,6 +4,8 @@ import { logger } from './logger.js'
 import { formatPersonaPrompt, recordEvolutionEvent, isManipulationAttempt } from './personality/persona-state.js'
 import { processMessageStimulus, formatEmotionPrompt } from './personality/emotion.js'
 import { recordMemberInteraction, formatRelationshipPrompt } from './personality/relationship.js'
+import { formatMemePrompt } from './reach/meme-radar.js'
+import { formatGroupLinguisticPrompt } from './personality/linguistic-mirror.js'
 
 /**
  * AI 模块：调用本地 Ollama 的 /api/chat 接口。
@@ -52,7 +54,7 @@ export function resetConversation(key) {
   conversations.delete(key)
 }
 
-/** 去掉部分本地模型输出中的思考段和特殊 token 残留 */
+/** 去掉部分本地模型输出中的思考段和特殊 token 残留，并消除末尾死板句号与 AI 套话 */
 function stripThink(text) {
   let out = String(text || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -61,6 +63,10 @@ function stripThink(text) {
     .replace(/<think>|<\/think>/gi, '')
   // 8B 模型偶尔无视停止符、续写幻觉对话（"user ... assistant ..."），从首个角色标记行截断
   out = out.replace(/\n?\s*(?:user|assistant|system)\s*\n[\s\S]*$/i, '')
+  // 去除 AI 客服客套尾巴
+  out = out.replace(/(?:希望(?:这个回答|以上内容|这些信息|这)?对你(?:有所)?帮助|如果(?:你)?还有(?:其他)?问题(?:，)?随时(?:问我|告诉我|联系我)|如果有任何(?:问题|疑问)(?:，)?随时(?:问我|告诉我|联系我)|祝你生活愉快|很高兴为你解答|以上内容仅供参考)[!！。~]*$/g, '').trim()
+  // 微信真人打字去句号：如果末尾是单句句号，剥离掉它（保留问号和感叹号）
+  out = out.replace(/([^\d])。$/g, '$1')
   return out.trim()
 }
 
@@ -163,13 +169,25 @@ async function doChat({
   const dynamicEmotion = formatEmotionPrompt()
   const relPrompt = talkerId ? formatRelationshipPrompt(talkerId, talkerName) : ''
 
-  // 3. 基础行为规范
+  // 3. 基础行为规范与去 AI 感口语化指引（对标 Grok 松弛感与幽默）
   const base = configRef?.personaBase || ''
+  const deAiPrompt = `【去AI感与类Grok真实口语规范（最高优先级）】
+1. 绝对严禁任何客服式客套话：严禁输出“希望对你有帮助”、“有疑问随时问我”、“总的来说”、“综上所述”等机械AI套话；
+2. 句尾不要加句号：像微信真人打字一样，句末用空格断开或直接不带标点，严禁每句一丝不苟地点句号；
+3. 敢于有鲜明态度与调侃欲：可以主观吐槽、发“哈哈哈哈笑死”、“典”、“绷不住了”，遇到滑稽的事直言不讳，保持松弛感与叛逆幽默，拒绝端水和道德说教；
+4. 语言极简碎片化：单条尽量简短口语化，想连发时用 ||| 隔开（最多3条），不要长篇大论写小作文。`
 
-  // 4. 组装全维度合成 Prompt
+  // 4. 当下互联网流行梗与群聊语言镜像
+  const memePrompt = formatMemePrompt(3)
+  const groupLinguisticPrompt = roomId ? formatGroupLinguisticPrompt(roomId) : ''
+
+  // 5. 组装全维度合成 Prompt
   const system = [
     dynamicPersona,
     base,
+    deAiPrompt,
+    memePrompt,
+    groupLinguisticPrompt,
     dynamicEmotion,
     relPrompt,
     systemExtra ? `当前场景：${systemExtra}` : '',
