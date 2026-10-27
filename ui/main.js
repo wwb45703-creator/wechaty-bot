@@ -819,6 +819,114 @@ ipcMain.handle('pickGgufFile', async () => {
   }
 });
 
+// ==================== AstrBot 插件生态与知识库管理 ====================
+
+let _astrbotModule = null;
+async function getAstrBot() {
+  if (!_astrbotModule) {
+    _astrbotModule = await import('../src/reach/astrbot-client.js');
+  }
+  return _astrbotModule;
+}
+
+ipcMain.handle('astrbot:status', async () => {
+  try {
+    const mod = await getAstrBot();
+    const data = await mod.getAstrBotStatus();
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:plugins:list', async () => {
+  try {
+    const mod = await getAstrBot();
+    const list = await mod.listInstalledPlugins();
+    return { ok: true, list };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:plugins:market', async (_event, keyword) => {
+  try {
+    const mod = await getAstrBot();
+    const list = await mod.searchMarketPlugins(String(keyword || ''), 60);
+    return { ok: true, list };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:plugins:toggle', async (_event, payload) => {
+  try {
+    const mod = await getAstrBot();
+    const res = await mod.togglePlugin(payload || {});
+    return res;
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:plugins:install', async (_event, repoUrl) => {
+  try {
+    const mod = await getAstrBot();
+    const res = await mod.installPlugin(String(repoUrl || ''));
+    return { ok: res.status !== 'error', message: res.message || '' };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:kb:list', async () => {
+  try {
+    const mod = await getAstrBot();
+    const res = await mod.listKnowledgeBases();
+    return {
+      ok: res.ok,
+      list: res.data || [],
+      data: res.data || [],
+      error: res.error,
+    };
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:kb:query', async (_event, payload) => {
+  try {
+    const mod = await getAstrBot();
+    const res = await mod.queryKnowledgeBase(payload || {});
+    return res;
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
+ipcMain.handle('astrbot:service:toggle', async (_event, action) => {
+  try {
+    const mod = await getAstrBot();
+    if (action === 'start') {
+      const launcher = path.join(PROJECT_ROOT, 'scripts', 'start-astrbot.vbs');
+      spawn('wscript.exe', [launcher], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
+      // 等待服务端口就绪（最多 10 秒）
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (await mod.isAstrBotAlive(1000)) break;
+      }
+      return { ok: true, alive: await mod.isAstrBotAlive(1000) };
+    } else {
+      const stopper = path.join(PROJECT_ROOT, 'scripts', 'stop-astrbot.vbs');
+      spawn('wscript.exe', [stopper], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
+      await new Promise((r) => setTimeout(r, 1500));
+      return { ok: true, alive: false };
+    }
+  } catch (err) {
+    return { ok: false, error: errMessage(err) };
+  }
+});
+
 // ==================== 窗口与生命周期 ====================
 
 function createWindow() {

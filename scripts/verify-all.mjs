@@ -132,6 +132,7 @@ const suites = [
   { name: '拟真人格演化与三层记忆专项测试', script: 'test-persona-evolution.mjs' },
   { name: '跨模型人设继承与全场景演化专项测试', script: 'test-cross-model-persona.mjs' },
   { name: 'AstrBot 本地插件桥接专项测试', script: 'test-astrbot-bridge.mjs' },
+  { name: 'AstrBot 控制台 IPC 桥接专项测试', script: 'test-ui-astrbot-ipc.mjs' },
   { name: '微信表情包互动专项测试', script: 'test-emoticon.mjs' },
 ]
 

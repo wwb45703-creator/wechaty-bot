@@ -171,6 +171,8 @@ export async function handleRoomMessage(msg, room) {
   const question = cleanMention(text, selfName, rc)
   logger.info(`群[${topic}] ${name} -> ${question.slice(0, 50)}`)
 
+  const shouldAt = rc?.atSender === false ? false : (rc?.atSender === true || triggerReason === 'mention')
+
   // 查群 ID 指令：无论群名如何变化，方便直接获取永久恒定的 roomId
   if (['查群ID', '群ID', '查群', '群信息'].includes(question)) {
     const members = await room.memberAll().catch(() => [])
@@ -264,7 +266,6 @@ export async function handleRoomMessage(msg, room) {
     }
   }
 
-  const shouldAt = rc?.atSender === false ? false : (rc?.atSender === true || triggerReason === 'mention')
   let systemExtra = shouldAt
     ? `当前是微信群"${topic}"的群聊，多个成员一起聊天，你回复时会自动@说话的人。请针对 ${name} 的问题自然地接话。`
     : `当前是微信群"${topic}"的群聊，你作为一个群成员像真实网友打字一样自然参与群聊交流，不要机械地@对方，直接像普通群友一样自然地接话。`

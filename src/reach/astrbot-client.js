@@ -12,9 +12,9 @@
 
 import config from '../config-loader.js'
 import { logger } from '../logger.js'
+import { validateExternalUrl } from '../url-utils.js'
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:6185'
-const DEFAULT_API_KEY = 'abk_0qS1Oyco8juZQe-3DwrNxVQQFVrByUL5jkFD-j5ABjI'
 
 /** 获取 AstrBot 配置 */
 export function getAstrBotConfig() {
@@ -22,7 +22,7 @@ export function getAstrBotConfig() {
   return {
     enabled: ac.enabled ?? true,
     baseUrl: (ac.baseUrl || process.env.ASTRBOT_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
-    apiKey: ac.apiKey || process.env.ASTRBOT_API_KEY || DEFAULT_API_KEY,
+    apiKey: ac.apiKey || process.env.ASTRBOT_API_KEY || '',
     timeoutMs: ac.timeoutMs ?? 30000,
     passThroughCommands: ac.passThroughCommands ?? true,
   }
@@ -198,6 +198,16 @@ export async function searchMarketPlugins(keyword = '', limit = 10) {
 /** 安装 GitHub / Git 插件 */
 export async function installPlugin(repoUrl) {
   const cfg = getAstrBotConfig()
+  const cleanUrl = String(repoUrl || '').trim()
+  if (!cleanUrl) {
+    return { status: 'error', message: '插件仓库地址不能为空' }
+  }
+
+  const valid = await validateExternalUrl(cleanUrl)
+  if (!valid.ok) {
+    return { status: 'error', message: `SSRF 防护拦截：${valid.error}` }
+  }
+
   try {
     const res = await fetch(`${cfg.baseUrl}/api/v1/plugins/install/github`, {
       method: 'POST',
@@ -205,11 +215,129 @@ export async function installPlugin(repoUrl) {
         'Content-Type': 'application/json',
         Authorization: `ApiKey ${cfg.apiKey}`,
       },
-      body: JSON.stringify({ url: repoUrl }),
+      body: JSON.stringify({ url: cleanUrl }),
+      signal: AbortSignal.timeout(cfg.timeoutMs || 30000),
     })
     return await res.json()
   } catch (e) {
     logger.error(`[AstrBot] 安装插件异常: ${e.message}`)
     return { status: 'error', message: e.message }
+  }
+}
+
+/** 切换插件启用/禁用状态 */
+export async function togglePlugin({ name, enabled }) {
+  const cfg = getAstrBotConfig()
+  const cleanName = String(name || '').trim()
+  if (!cleanName) {
+    return { ok: false, error: '插件名称不能为空' }
+  }
+
+  try {
+    const res = await fetch(`${cfg.baseUrl}/api/v1/plugins/${encodeURIComponent(cleanName)}/enabled`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `ApiKey ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({ enabled: Boolean(enabled) }),
+      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
+    })
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, data }
+  } catch (e) {
+    logger.error(`[AstrBot] 切换插件状态异常: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+}
+
+/** 查询知识库列表 */
+export async function listKnowledgeBases() {
+  const cfg = getAstrBotConfig()
+  try {
+    const res = await fetch(`${cfg.baseUrl}/api/v1/knowledge-bases`, {
+      headers: { Authorization: `ApiKey ${cfg.apiKey}` },
+      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (data.status === 'ok' && data.data) {
+      return { ok: true, data: data.data.items || [] }
+    }
+    return { ok: true, data: [] }
+  } catch (e) {
+    logger.warn(`[AstrBot] 查询知识库列表失败: ${e.message}`)
+    return { ok: false, error: e.message, data: [] }
+  }
+}
+
+/** 在指定知识库中检索知识切片 */
+export async function queryKnowledgeBase({ kbId, query, topK = 3 }) {
+  const cfg = getAstrBotConfig()
+  const cleanKbId = String(kbId || '').trim()
+  if (!cleanKbId) {
+    return { ok: false, error: '知识库 ID 不能为空' }
+  }
+  const cleanTopK = Math.max(1, Math.min(20, parseInt(topK, 10) || 3))
+
+  try {
+    const res = await fetch(`${cfg.baseUrl}/api/v1/knowledge-bases/${encodeURIComponent(cleanKbId)}/retrieve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `ApiKey ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        query: String(query || '').slice(0, 1000),
+        top_k: cleanTopK,
+      }),
+      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (data.status === 'ok' && Array.isArray(data.data)) {
+      return { ok: true, chunks: data.data }
+    }
+    return { ok: false, error: data.message || '检索知识库失败' }
+  } catch (e) {
+    logger.warn(`[AstrBot] 检索知识库失败: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+}
+
+/** 获取 AstrBot 全局运行状态与统计 */
+export async function getAstrBotStatus() {
+  const cfg = getAstrBotConfig()
+  const alive = await isAstrBotAlive(2000)
+  if (!alive) {
+    return {
+      alive: false,
+      baseUrl: cfg.baseUrl,
+      enabled: cfg.enabled,
+      pluginCount: 0,
+      kbCount: 0,
+    }
+  }
+
+  const [plugins, kbs] = await Promise.all([
+    listInstalledPlugins(),
+    listKnowledgeBases(),
+  ])
+
+  return {
+    alive: true,
+    baseUrl: cfg.baseUrl,
+    enabled: cfg.enabled,
+    version: '4.29.3',
+    pluginCount: plugins.length,
+    plugins: plugins.map((p) => ({
+      name: p.name,
+      displayName: p.i18n?.['zh-CN']?.metadata?.display_name || p.display_name || p.name,
+      desc: p.i18n?.['zh-CN']?.metadata?.desc || p.desc || '',
+      author: p.author || '',
+      version: p.version || '',
+      activated: p.activated !== false,
+      reserved: Boolean(p.reserved),
+    })),
+    kbCount: kbs.data?.length || 0,
+    knowledgeBases: kbs.data || [],
   }
 }

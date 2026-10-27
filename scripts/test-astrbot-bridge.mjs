@@ -18,6 +18,9 @@ import {
   chatWithAstrBot,
   listInstalledPlugins,
   searchMarketPlugins,
+  getAstrBotStatus,
+  listKnowledgeBases,
+  togglePlugin,
 } from '../src/reach/astrbot-client.js'
 
 let pass = 0
@@ -61,6 +64,18 @@ ok('已安装插件查询成功且包含内置组件', Array.isArray(installed) 
 // 5. 官方插件市场检索 (2800+ 插件)
 const marketResults = await searchMarketPlugins('music', 3)
 ok('官方插件市场检索成功', Array.isArray(marketResults) && marketResults.length >= 1, `检索到 ${marketResults.length} 个结果`)
+
+// 6. 全局状态聚合查询 getAstrBotStatus
+const status = await getAstrBotStatus()
+ok('全局状态探活成功且包含版本与插件列表', status.alive === true && status.version === '4.29.3' && status.pluginCount >= 1)
+
+// 7. 知识库列表接口 listKnowledgeBases
+const kbRes = await listKnowledgeBases()
+ok('知识库列表接口正常返回 (无需特殊鉴权报错)', kbRes.ok === true && Array.isArray(kbRes.data))
+
+// 8. 插件状态切换 togglePlugin (保持激活)
+const toggleRes = await togglePlugin({ name: 'builtin_commands', enabled: true })
+ok('插件状态切换接口响应成功', toggleRes.ok === true)
 
 console.log('\n==================================================')
 console.log(`专项测试统计: ${pass} 通过 / ${fail} 失败`)

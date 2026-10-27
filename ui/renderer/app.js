@@ -154,6 +154,9 @@ function renderStatus(st) {
   if (st.flag) hint.textContent = '机器人处于停用保护状态，点上方按钮重新启动。';
   else if (!oOk) hint.textContent = 'Ollama 未运行，机器人无法生成回复——可点左侧卡片按钮启动。';
   else hint.textContent = '请保持微信客户端已登录（锁死版本 3.9.10.27）。';
+
+  // AstrBot 插件中枢状态
+  refreshAstrBotHomeStatus();
 }
 
 /* ==================== 启停操作 ==================== */
@@ -823,6 +826,328 @@ async function initAutostart() {
   });
 }
 
+/* ==================== AstrBot 插件中心与知识库 ==================== */
+
+let installedPluginsList = [];
+let marketPluginsList = [];
+let pluginCurrentView = 'installed'; // 'installed' | 'market'
+let pluginSearchTimer = null;
+
+async function refreshAstrBotHomeStatus() {
+  const dot = $('dot-astrbot');
+  const txt = $('text-astrbot');
+  const btn = $('btn-astrbot-toggle');
+  const hint = $('astrbot-hint');
+  if (!dot || !txt) return;
+
+  const fn = api('astrbotGetStatus');
+  if (!fn) return;
+
+  try {
+    const res = await fn();
+    const alive = res && res.ok && res.data && res.data.alive;
+    dot.className = 'dot' + (alive ? ' ok' : ' off');
+    txt.textContent = alive ? `运行中 (v${res.data.version || '4.29.3'})` : '未运行';
+    if (btn) {
+      btn.textContent = alive ? '关闭插件服务' : '启动插件服务';
+      btn.classList.toggle('stop', Boolean(alive));
+    }
+    if (hint) {
+      if (alive) {
+        hint.textContent = `已载入 ${res.data.pluginCount || 0} 个插件，${res.data.kbCount || 0} 个知识库 (端口 6185)`;
+      } else {
+        hint.textContent = 'AstrBot 未运行，插件与知识库扩展暂不可用';
+      }
+    }
+  } catch {
+    dot.className = 'dot off';
+    txt.textContent = '检测失败';
+  }
+}
+
+async function onAstrBotToggleClick() {
+  const btn = $('btn-astrbot-toggle');
+  if (!btn) return;
+  const isRunning = btn.classList.contains('stop');
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+
+  const fn = api('astrbotToggleService');
+  if (!fn) return;
+
+  try {
+    const action = isRunning ? 'stop' : 'start';
+    const res = await fn(action);
+    if (res && res.ok) {
+      toast(isRunning ? '已停止 AstrBot 插件服务' : '已启动 AstrBot 插件服务');
+    } else {
+      toast('操作失败：' + (res?.error || '未知错误'), true);
+    }
+  } catch (err) {
+    toast('操作异常：' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    refreshAstrBotHomeStatus();
+  }
+}
+
+async function refreshPluginsPage() {
+  if (pluginCurrentView === 'installed') {
+    await fetchInstalledPlugins();
+  } else {
+    await fetchMarketPlugins();
+  }
+}
+
+async function fetchInstalledPlugins() {
+  const container = $('plugins-grid');
+  if (!container) return;
+  container.innerHTML = '<div class="sub-hint">正在读取已安装插件…</div>';
+
+  const fn = api('astrbotGetPlugins');
+  if (!fn) return;
+
+  try {
+    const res = await fn();
+    if (res && res.ok && Array.isArray(res.list)) {
+      installedPluginsList = res.list;
+      const countEl = $('installed-plugins-count');
+      if (countEl) countEl.textContent = String(installedPluginsList.length);
+      renderPluginsList();
+    } else {
+      container.innerHTML = `<div class="sub-hint err">读取插件失败：${escapeHtml(res?.error || 'AstrBot 服务未运行')}</div>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="sub-hint err">读取异常：${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function fetchMarketPlugins(keyword = '') {
+  const container = $('plugins-grid');
+  if (!container) return;
+  container.innerHTML = '<div class="sub-hint">正在检索 2800+ 社区插件市场…</div>';
+
+  const fn = api('astrbotSearchMarket');
+  if (!fn) return;
+
+  try {
+    const res = await fn(keyword);
+    if (res && res.ok && Array.isArray(res.list)) {
+      marketPluginsList = res.list;
+      renderPluginsList();
+    } else {
+      container.innerHTML = `<div class="sub-hint err">检索市场失败：${escapeHtml(res?.error || '网络异常')}</div>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="sub-hint err">检索异常：${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderPluginsList() {
+  const container = $('plugins-grid');
+  if (!container) return;
+  const kw = ($('plugin-search-input')?.value || '').toLowerCase().trim();
+
+  if (pluginCurrentView === 'installed') {
+    const filtered = installedPluginsList.filter((p) => {
+      const name = (p.name || '').toLowerCase();
+      const desc = (p.desc || p.i18n?.['zh-CN']?.metadata?.desc || '').toLowerCase();
+      const author = (p.author || '').toLowerCase();
+      return !kw || name.includes(kw) || desc.includes(kw) || author.includes(kw);
+    });
+
+    if (!filtered.length) {
+      container.innerHTML = '<div class="sub-hint">暂无匹配的已安装插件。</div>';
+      return;
+    }
+
+    container.innerHTML = filtered.map((p) => {
+      const isReserved = Boolean(p.reserved);
+      const isActivated = p.activated !== false;
+      const dName = escapeHtml(p.i18n?.['zh-CN']?.metadata?.display_name || p.display_name || p.name);
+      const dDesc = escapeHtml(p.i18n?.['zh-CN']?.metadata?.desc || p.desc || '暂无描述');
+      const author = escapeHtml(p.author || '未知作者');
+      const ver = escapeHtml(p.version || 'v1.0.0');
+
+      return `
+        <div class="plugin-card">
+          <div class="plugin-card-top">
+            <div class="plugin-title-box">
+              <div class="plugin-name">${dName} <span class="small-note">${ver}</span></div>
+              <div class="plugin-author">作者：${author}</div>
+            </div>
+            <span class="plugin-tag ${isReserved ? 'reserved' : ''}">${isReserved ? '内置核心' : '扩展插件'}</span>
+          </div>
+          <div class="plugin-desc">${dDesc}</div>
+          <div class="plugin-footer">
+            <span class="small-note">${isActivated ? '🟢 已启用' : '⚪ 已停用'}</span>
+            ${isReserved ? '<span class="small-note">核心组件不可关闭</span>' : `
+              <label class="switch">
+                <input type="checkbox" class="plugin-toggle-checkbox" data-pname="${escapeHtml(p.name)}" ${isActivated ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+            `}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.plugin-toggle-checkbox').forEach((cb) => {
+      cb.addEventListener('change', async () => {
+        const pName = cb.getAttribute('data-pname');
+        const enabled = cb.checked;
+        const toggleFn = api('astrbotTogglePlugin');
+        if (!toggleFn) return;
+        toast(`正在${enabled ? '启用' : '停用'}插件 ${pName}…`);
+        try {
+          const res = await toggleFn({ name: pName, enabled });
+          if (res && res.ok) {
+            toast(`插件 ${pName} 已${enabled ? '启用' : '停用'}`);
+          } else {
+            toast(`插件操作失败：${res?.error || '未知错误'}`, true);
+            cb.checked = !enabled;
+          }
+        } catch (e) {
+          toast(`操作异常：${e.message}`, true);
+          cb.checked = !enabled;
+        }
+      });
+    });
+  } else {
+    // 插件市场视图
+    if (!marketPluginsList.length) {
+      container.innerHTML = '<div class="sub-hint">暂无市场插件结果，可尝试更换关键词搜索。</div>';
+      return;
+    }
+
+    container.innerHTML = marketPluginsList.map((p) => {
+      const dName = escapeHtml(p.name || p.id);
+      const dDesc = escapeHtml(p.desc || '暂无描述');
+      const author = escapeHtml(p.author || '社区贡献者');
+      const ver = escapeHtml(p.version || '');
+      const repo = escapeHtml(p.repo || '');
+
+      return `
+        <div class="plugin-card">
+          <div class="plugin-card-top">
+            <div class="plugin-title-box">
+              <div class="plugin-name">${dName} <span class="small-note">${ver}</span></div>
+              <div class="plugin-author">开发者：${author}</div>
+            </div>
+            <span class="plugin-tag">社区市场</span>
+          </div>
+          <div class="plugin-desc">${dDesc}</div>
+          <div class="plugin-footer">
+            <span class="small-note">${repo ? '开源代码库' : '官方认证'}</span>
+            <button class="btn btn-sm btn-install-plugin" data-repo="${repo}" data-pname="${dName}">安装插件</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.btn-install-plugin').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const repo = btn.getAttribute('data-repo');
+        const pName = btn.getAttribute('data-pname');
+        if (!repo) {
+          toast(`插件 ${pName} 为内置包或无外部 Git 地址`, true);
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = '安装中…';
+        toast(`开始安装插件 ${pName}，请稍候…`);
+        const installFn = api('astrbotInstallPlugin');
+        if (!installFn) return;
+        try {
+          const res = await installFn(repo);
+          if (res && res.ok) {
+            toast(`🎉 插件 ${pName} 安装成功！`);
+            await fetchInstalledPlugins();
+          } else {
+            toast(`安装失败：${res?.message || '未知错误'}`, true);
+          }
+        } catch (e) {
+          toast(`安装异常：${e.message}`, true);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '安装插件';
+        }
+      });
+    });
+  }
+}
+
+async function refreshKnowledgePage() {
+  const container = $('kb-list-container');
+  if (!container) return;
+  container.innerHTML = '<div class="sub-hint">正在读取知识库…</div>';
+
+  const fn = api('astrbotGetKnowledgeBases');
+  if (!fn) return;
+
+  try {
+    const res = await fn();
+    if (res && res.ok && Array.isArray(res.data)) {
+      if (!res.data.length) {
+        container.innerHTML = '<div class="sub-hint">当前尚未创建知识库。可在 AstrBot 仪表盘上传 Markdown/PDF 文档创建。</div>';
+        return;
+      }
+      container.innerHTML = res.data.map((kb) => `
+        <div class="kb-card">
+          <div>
+            <div class="kb-name">${escapeHtml(kb.name || kb.id)}</div>
+            <div class="kb-meta">ID: ${escapeHtml(kb.id)} • 文档数: ${kb.documents_count || 0} • 切片数: ${kb.chunks_count || 0}</div>
+          </div>
+          <span class="plugin-tag">RAG 混合检索</span>
+        </div>
+      `).join('');
+    } else {
+      container.innerHTML = `<div class="sub-hint err">读取知识库失败：${escapeHtml(res?.error || 'AstrBot 未运行')}</div>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="sub-hint err">读取异常：${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function onRunKbQuery() {
+  const input = $('kb-query-input');
+  const resBox = $('kb-results-container');
+  if (!input || !resBox) return;
+  const q = input.value.trim();
+  if (!q) {
+    toast('请输入测试问题或关键词', true);
+    return;
+  }
+
+  resBox.innerHTML = '<div class="sub-hint">正在执行 RAG 知识库混合检索…</div>';
+  const kbFn = api('astrbotGetKnowledgeBases');
+  const queryFn = api('astrbotQueryKnowledgeBase');
+  if (!kbFn || !queryFn) return;
+
+  try {
+    const kbs = await kbFn();
+    const firstKb = kbs?.data?.[0];
+    if (!firstKb) {
+      resBox.innerHTML = '<div class="sub-hint">暂无可用知识库可供测试。</div>';
+      return;
+    }
+
+    const res = await queryFn({ kbId: firstKb.id, query: q, topK: 3 });
+    if (res && res.ok && Array.isArray(res.chunks) && res.chunks.length) {
+      resBox.innerHTML = res.chunks.map((c, i) => `
+        <div class="kb-chunk-card">
+          <div class="kb-chunk-score">召回切片 #${i + 1} (相关度得分: ${c.score != null ? c.score.toFixed(3) : '匹配'})</div>
+          <div>${escapeHtml(c.content || c.text || JSON.stringify(c))}</div>
+        </div>
+      `).join('');
+    } else {
+      resBox.innerHTML = `<div class="sub-hint">${escapeHtml(res?.error || '未检索到与该问题高相关的切片')}</div>`;
+    }
+  } catch (err) {
+    resBox.innerHTML = `<div class="sub-hint err">检索异常：${escapeHtml(err.message)}</div>`;
+  }
+}
+
 /* ==================== 页面切换 ==================== */
 
 function switchPage(name) {
@@ -840,6 +1165,10 @@ function switchPage(name) {
     refreshRelationships();
   } else if (name === 'memories') {
     refreshMemoryArchive();
+  } else if (name === 'plugins') {
+    refreshPluginsPage();
+  } else if (name === 'knowledge') {
+    refreshKnowledgePage();
   }
 }
 
@@ -877,14 +1206,43 @@ function init() {
   // 记忆档案
   $('btn-refresh-memories').addEventListener('click', refreshMemoryArchive);
   $('memory-search-input').addEventListener('input', renderMemoryArchiveList);
-  document.querySelectorAll('.tab-pill').forEach((pill) => {
+  document.querySelectorAll('#page-memories .tab-pill').forEach((pill) => {
     pill.addEventListener('click', () => {
-      document.querySelectorAll('.tab-pill').forEach((p) => p.classList.remove('active'));
+      document.querySelectorAll('#page-memories .tab-pill').forEach((p) => p.classList.remove('active'));
       pill.classList.add('active');
       memoryFilter = pill.getAttribute('data-mfilter') || 'all';
       renderMemoryArchiveList();
     });
   });
+
+  // 插件中心
+  $('btn-astrbot-toggle')?.addEventListener('click', onAstrBotToggleClick);
+  $('tab-installed-plugins')?.addEventListener('click', () => {
+    $('tab-installed-plugins').classList.add('active');
+    $('tab-market-plugins').classList.remove('active');
+    pluginCurrentView = 'installed';
+    renderPluginsList();
+  });
+  $('tab-market-plugins')?.addEventListener('click', () => {
+    $('tab-market-plugins').classList.add('active');
+    $('tab-installed-plugins').classList.remove('active');
+    pluginCurrentView = 'market';
+    if (!marketPluginsList.length) fetchMarketPlugins();
+    else renderPluginsList();
+  });
+  $('btn-refresh-plugins')?.addEventListener('click', refreshPluginsPage);
+  $('plugin-search-input')?.addEventListener('input', () => {
+    clearTimeout(pluginSearchTimer);
+    pluginSearchTimer = setTimeout(() => {
+      if (pluginCurrentView === 'market') fetchMarketPlugins($('plugin-search-input').value);
+      else renderPluginsList();
+    }, 350);
+  });
+
+  // 知识库技能
+  $('btn-refresh-kb')?.addEventListener('click', refreshKnowledgePage);
+  $('btn-run-kb-query')?.addEventListener('click', onRunKbQuery);
+  $('kb-query-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') onRunKbQuery(); });
 
   // 模态弹窗关闭
   $('btn-modal-close').addEventListener('click', closeModal);
@@ -917,6 +1275,7 @@ function init() {
   refreshLogs();
   refreshEmotionDashboard();
   refreshModels();
+  refreshAstrBotHomeStatus();
 }
 
 document.addEventListener('DOMContentLoaded', init);

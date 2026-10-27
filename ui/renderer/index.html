@@ -37,6 +37,12 @@
       <button class="nav-item" data-page="memories">
         <span class="nav-icon">📚</span><span>记忆档案</span>
       </button>
+      <button class="nav-item" data-page="plugins">
+        <span class="nav-icon">🧩</span><span>插件中心</span>
+      </button>
+      <button class="nav-item" data-page="knowledge">
+        <span class="nav-icon">📖</span><span>知识库技能</span>
+      </button>
       <button class="nav-item" data-page="about">
         <span class="nav-icon">ℹ️</span><span>关于</span>
       </button>
@@ -71,7 +77,7 @@
           <div class="hint" id="home-hint"></div>
         </div>
 
-        <div class="grid-2">
+        <div class="grid-3">
           <div class="card small-card">
             <div class="small-title">Ollama AI 服务</div>
             <div class="small-line"><span class="dot" id="dot-ollama"></span><span id="text-ollama">检测中…</span></div>
@@ -82,6 +88,12 @@
             <div class="small-title">微信客户端</div>
             <div class="small-line"><span class="dot" id="dot-wechat"></span><span id="text-wechat">检测中…</span></div>
             <div class="small-note">机器人依赖已登录的微信，请保持登录</div>
+          </div>
+          <div class="card small-card">
+            <div class="small-title">AstrBot 插件中枢</div>
+            <div class="small-line"><span class="dot" id="dot-astrbot"></span><span id="text-astrbot">检测中…</span></div>
+            <button class="btn ghost" id="btn-astrbot-toggle">管理插件服务</button>
+            <div class="small-note" id="astrbot-hint">提供 2800+ 社区插件、MCP 工具与 RAG 知识库</div>
           </div>
         </div>
 
@@ -284,6 +296,65 @@
 
         <div class="memory-cards-grid" id="memory-cards-grid">
           <!-- 动态记忆列表 -->
+        </div>
+      </section>
+
+      <!-- ===== 插件中心 (AstrBot 插件生态) ===== -->
+      <section class="page" id="page-plugins">
+        <div class="card">
+          <div class="plugin-toolbar">
+            <div>
+              <div class="status-title" style="margin-bottom:6px;">🧩 AstrBot 插件生态中心</div>
+              <div class="small-note">直连 2800+ 社区插件市场、MCP 工具与 Agent 技能，全自动赋能微信机器人</div>
+            </div>
+            <div class="plugin-filter-row">
+              <div class="tab-pills">
+                <button class="tab-pill active" id="tab-installed-plugins" data-pview="installed">已安装插件 (<span id="installed-plugins-count">0</span>)</button>
+                <button class="tab-pill" id="tab-market-plugins" data-pview="market">社区插件市场 (2800+)</button>
+              </div>
+              <input type="text" class="text-input" id="plugin-search-input" placeholder="搜索插件 (如: 天气, 音乐, 股票, 搜图, MCP)..." spellcheck="false">
+              <button class="btn ghost" id="btn-refresh-plugins">刷新</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="plugins-grid" id="plugins-grid">
+          <!-- 动态插件卡片 -->
+        </div>
+      </section>
+
+      <!-- ===== 知识库技能 (AstrBot RAG 混合知识库) ===== -->
+      <section class="page" id="page-knowledge">
+        <div class="card">
+          <div class="status-row">
+            <div>
+              <div class="card-title">📖 RAG 混合检索知识库</div>
+              <div class="small-note">结合 Microsoft Markitdown 与 BM25+稠密向量混合检索，赋予机器人专属领域知识</div>
+            </div>
+            <button class="btn ghost" id="btn-refresh-kb">刷新列表</button>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <!-- 知识库列表 -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom: 12px;">已载入知识库</div>
+            <div id="kb-list-container" class="kb-list-container">
+              <!-- 动态知识库列表 -->
+            </div>
+          </div>
+
+          <!-- 检索测试沙盒 -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom: 12px;">知识切片检索测试</div>
+            <div class="kb-query-box">
+              <input type="text" class="text-input" id="kb-query-input" placeholder="输入测试问题或关键词..." spellcheck="false">
+              <button class="btn" id="btn-run-kb-query">测试检索</button>
+            </div>
+            <div id="kb-results-container" class="kb-results-container" style="margin-top: 14px;">
+              <div class="sub-hint">输入问题点击测试检索，即可实时观察 RAG 召回的知识切片。</div>
+            </div>
+          </div>
         </div>
       </section>
 

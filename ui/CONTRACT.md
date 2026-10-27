@@ -138,6 +138,38 @@
 
 - 删除指定成员的关系画像。
 
+### `botctl.astrbotGetStatus()` → `{ ok: true, data: object }`
+
+- 获取本地 AstrBot 运行时状态，包含服务在线探针、端口、版本、已安装插件列表及知识库统计。
+
+### `botctl.astrbotGetPlugins()` → `{ ok: true, list: Array }`
+
+- 获取本地已安装的 AstrBot 插件元数据列表。
+
+### `botctl.astrbotSearchMarket(keyword?: string)` → `{ ok: true, list: Array }`
+
+- 检索官方 2800+ 社区插件市场，支持名称、简介、作者模糊搜索。
+
+### `botctl.astrbotTogglePlugin({ name: string, enabled: boolean })` → `{ ok: boolean }`
+
+- 实时启用或禁用指定插件。
+
+### `botctl.astrbotInstallPlugin(repoUrl: string)` → `{ ok: boolean, message?: string }`
+
+- 从 Git/GitHub 在线拉取并安装插件。
+
+### `botctl.astrbotGetKnowledgeBases()` → `{ ok: true, list: Array, data: Array }`
+
+- 读取当前知识库列表与切片数量统计。
+
+### `botctl.astrbotQueryKnowledgeBase({ kbId: string, query: string, topK?: number })` → `{ ok: boolean, chunks: Array }`
+
+- 在指定知识库执行 RAG 检索测试，返回匹配的内容切片。
+
+### `botctl.astrbotToggleService(action: 'start' | 'stop')` → `{ ok: boolean }`
+
+- 启动或停止本地 AstrBot 守护进程（纯后台静默调度，零闪窗）。
+
 ### `botctl.onStatus(callback: (status: Status) => void)` → `() => void`
 
 - 订阅每 3 秒一次的状态推送（通道 `'status'`）；

@@ -72,6 +72,16 @@ contextBridge.exposeInMainWorld('botctl', {
   getRelationship: (...args) => ipcRenderer.invoke('getRelationship', ...args),
   deleteRelationship: (...args) => ipcRenderer.invoke('deleteRelationship', ...args),
 
+  // AstrBot 插件生态与知识库管理
+  astrbotGetStatus: (...args) => ipcRenderer.invoke('astrbot:status', ...args),
+  astrbotGetPlugins: (...args) => ipcRenderer.invoke('astrbot:plugins:list', ...args),
+  astrbotSearchMarket: (...args) => ipcRenderer.invoke('astrbot:plugins:market', ...args),
+  astrbotInstallPlugin: (...args) => ipcRenderer.invoke('astrbot:plugins:install', ...args),
+  astrbotTogglePlugin: (...args) => ipcRenderer.invoke('astrbot:plugins:toggle', ...args),
+  astrbotGetKnowledgeBases: (...args) => ipcRenderer.invoke('astrbot:kb:list', ...args),
+  astrbotQueryKnowledgeBase: (...args) => ipcRenderer.invoke('astrbot:kb:query', ...args),
+  astrbotToggleService: (...args) => ipcRenderer.invoke('astrbot:service:toggle', ...args),
+
   /**
    * 订阅主进程每 3 秒推送的状态（通道 'status'）。
    * 返回取消订阅函数，组件销毁时记得调用。
