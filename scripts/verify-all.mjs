@@ -131,6 +131,7 @@ const suites = [
   { name: '群聊免 @ 触发规则专项测试', script: 'test-room-trigger.mjs' },
   { name: '拟真人格演化与三层记忆专项测试', script: 'test-persona-evolution.mjs' },
   { name: '跨模型人设继承与全场景演化专项测试', script: 'test-cross-model-persona.mjs' },
+  { name: 'AstrBot 本地插件桥接专项测试', script: 'test-astrbot-bridge.mjs' },
 ]
 
 for (const suite of suites) {

@@ -9,6 +9,7 @@ import { reflectOnMemories } from '../personality/reflection.js'
 import { recordGroupMessage } from '../personality/linguistic-mirror.js'
 import { detectImplicitSearchIntent } from './search.js'
 import { webSearch } from '../reach/search.js'
+import { isAstrBotCommand, chatWithAstrBot, isAstrBotAlive, listInstalledPlugins } from '../reach/astrbot-client.js'
 
 /**
  * 群聊自动回复：
@@ -231,6 +232,36 @@ export async function handleRoomMessage(msg, room) {
   if (personaHandled) {
     recordReply(key, 0)
     return
+  }
+
+  // AstrBot 插件与技能指令转发
+  if (isAstrBotCommand(question)) {
+    const alive = await isAstrBotAlive()
+    if (alive) {
+      if (/^(astrbot|插件)\s*(列表|list)$/i.test(question)) {
+        const plugins = await listInstalledPlugins()
+        const pluginList = plugins.map((p) => `• ${p.display_name || p.name} (v${p.version}): ${p.desc || '无描述'}`).join('\n')
+        await room.say(`@${name}\n🧩 【AstrBot 已启用插件 (${plugins.length}个)】\n${pluginList || '暂无已启用插件'}`, talker).catch(() => {})
+        recordReply(key, 0)
+        return
+      }
+      logger.info(`[AstrBot] 转发群[${topic}]指令: ${question}`)
+      const astrRes = await chatWithAstrBot({
+        message: question,
+        sessionId: room.id,
+        username: name,
+      })
+      if (astrRes.ok && astrRes.reply) {
+        const bubbles = splitBubbles(astrRes.reply)
+        await sendBubbles((t) => {
+          const body = stripAtMentions(t)
+          const textToSend = shouldAt ? `@${name} ${body}` : body
+          return room.say(textToSend, talker)
+        }, bubbles, config.ai?.replyDelaySeconds)
+        recordReply(key, 0)
+        return
+      }
+    }
   }
 
   const shouldAt = rc?.atSender === false ? false : (rc?.atSender === true || triggerReason === 'mention')

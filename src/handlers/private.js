@@ -7,6 +7,7 @@ import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory }
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 import { clearRelationship } from '../personality/relationship.js'
 import { reflectOnMemories } from '../personality/reflection.js'
+import { isAstrBotCommand, chatWithAstrBot, isAstrBotAlive, listInstalledPlugins } from '../reach/astrbot-client.js'
 
 /**
  * 私聊自动回复
@@ -98,6 +99,35 @@ export async function handlePrivateMessage(msg) {
   if (personaHandled) {
     recordReply(key, 0)
     return
+  }
+
+  // AstrBot 插件与技能指令转发
+  if (isAstrBotCommand(text)) {
+    const alive = await isAstrBotAlive()
+    if (alive) {
+      if (/^(astrbot|插件)\s*(列表|list)$/i.test(text)) {
+        const plugins = await listInstalledPlugins()
+        const pluginList = plugins.map((p) => `• ${p.display_name || p.name} (v${p.version}): ${p.desc || '无描述'}`).join('\n')
+        await msg.say(`🧩 【AstrBot 已启用插件 (${plugins.length}个)】\n${pluginList || '暂无已启用插件'}`)
+        recordReply(key, 0)
+        return
+      }
+      logger.info(`[AstrBot] 转发私聊指令 -> ${alias || name}: ${text}`)
+      const astrRes = await chatWithAstrBot({
+        message: text,
+        sessionId: `private:${talker.id}`,
+        username: alias || name,
+      })
+      if (astrRes.ok && astrRes.reply) {
+        const bubbles = splitBubbles(astrRes.reply)
+        await sendBubbles((t) => {
+          logger.info(`[AstrBot回复私聊] ${alias || name} -> ${t.slice(0, 60)}`)
+          return msg.say(t)
+        }, bubbles, config.ai?.replyDelaySeconds)
+        recordReply(key, 0)
+        return
+      }
+    }
   }
 
   logger.info(`私聊回复 -> ${alias || name}: ${text.slice(0, 50)}`)

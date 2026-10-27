@@ -14,3 +14,4 @@ config.json
 .DS_Store
 ui/release/
 ui/node_modules/
+data/
