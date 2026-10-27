@@ -134,6 +134,7 @@ const suites = [
   { name: 'AstrBot 本地插件桥接专项测试', script: 'test-astrbot-bridge.mjs' },
   { name: 'AstrBot 控制台 IPC 桥接专项测试', script: 'test-ui-astrbot-ipc.mjs' },
   { name: '微信表情包互动专项测试', script: 'test-emoticon.mjs' },
+  { name: '拟真大跨度情绪动态与负面情绪原型专项测试', script: 'test-emotion-v2.mjs' },
 ]
 
 for (const suite of suites) {

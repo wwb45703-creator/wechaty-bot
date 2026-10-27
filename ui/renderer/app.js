@@ -204,8 +204,8 @@ async function refreshEmotionDashboard() {
   if (!res || !res.ok || !res.emotion) return;
 
   const emo = res.emotion;
-  // 愉悦度 -50 ~ +50 映射到 0% ~ 100%
-  const pleasurePct = Math.max(0, Math.min(100, Math.round(((emo.pleasure + 50) / 100) * 100)));
+  // 愉悦度 -60 ~ +60 映射到 0% ~ 100%
+  const pleasurePct = Math.max(0, Math.min(100, Math.round(((emo.pleasure + 60) / 120) * 100)));
   const arousalPct = Math.max(0, Math.min(100, emo.arousal ?? 50));
   const tensionPct = Math.max(0, Math.min(100, emo.tension ?? 20));
   const fatiguePct = Math.max(0, Math.min(100, emo.fatigue ?? 0));
@@ -220,18 +220,31 @@ async function refreshEmotionDashboard() {
   $('bar-tension').style.width = tensionPct + '%';
   $('bar-fatigue').style.width = fatiguePct + '%';
 
-  // 综合评语
+  // 6 大拟人情绪原型计算与展示
+  let archetypeLabel = '☕ 松弛自然';
+  if ((emo.fatigue ?? 0) >= 60 && (emo.arousal ?? 50) <= 40) {
+    archetypeLabel = '🥱 社交摆烂';
+  } else if ((emo.pleasure ?? 0) <= -20 && (emo.tension ?? 20) >= 40 && (emo.arousal ?? 50) >= 55) {
+    archetypeLabel = '😡 炸毛暴躁';
+  } else if ((emo.pleasure ?? 0) <= -12 && (emo.arousal ?? 50) <= 55) {
+    archetypeLabel = '😒 傲娇赌气';
+  } else if ((emo.pleasure ?? 0) <= -5 && (emo.tension ?? 20) >= 35) {
+    archetypeLabel = '😏 阴阳怪气';
+  } else if ((emo.pleasure ?? 0) >= 18 && (emo.arousal ?? 50) >= 60) {
+    archetypeLabel = '🎉 上头乐子人';
+  }
+
   const descs = [];
-  if (emo.pleasure > 15) descs.push('心情愉悦轻松');
-  else if (emo.pleasure < -15) descs.push('稍显戒备或受挫');
+  if (emo.pleasure > 15) descs.push('愉悦轻松');
+  else if (emo.pleasure < -15) descs.push('心情不爽/赌气中');
 
-  if (emo.arousal > 70) descs.push('兴致勃勃，主动接话');
-  else if (emo.arousal < 35) descs.push('慵懒平和');
+  if (emo.arousal > 70) descs.push('兴致极高');
+  else if (emo.arousal < 35) descs.push('慵懒冷淡');
 
-  if (emo.fatigue > 60) descs.push('社交疲劳积累中');
-  if (!descs.length) descs.push('心态自然平和');
+  if (emo.fatigue > 60) descs.push('社交电量耗尽');
+  if (!descs.length) descs.push('日常平和');
 
-  $('home-emotion-summary').textContent = descs.join(' · ');
+  $('home-emotion-summary').textContent = `[${archetypeLabel}] ${descs.join(' · ')}`;
 }
 
 /* ==================== 日志区（带高亮与行数） ==================== */
