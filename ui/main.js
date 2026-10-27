@@ -160,6 +160,15 @@ async function doStartBot() {
     detached: true,
   }).unref();
 
+  // 步骤 4：快速等待 PID 落地，提供即时上线反馈（最多等 4 秒）
+  for (let i = 0; i < 14; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    const pid = readPidFile();
+    if (pid !== null) {
+      return { ok: true, pid, note: '机器人已成功上线' };
+    }
+  }
+
   return { ok: true, note: '已请求启动，约 1 分钟内上线' };
 }
 
@@ -254,7 +263,7 @@ ipcMain.handle('setCurrentModel', async (_event, name) => {
     fs.renameSync(tmpFile, CONFIG_FILE); // 同盘 rename，原子替换
 
     // bot 在运行才需要重启生效；doStartBot 内部会清掉 doStopBot 写入的停用标记
-    const wasRunning = findBotPid() !== null;
+    const wasRunning = readPidFile() !== null;
     if (wasRunning) {
       const stopped = await doStopBot();
       if (!stopped.ok) return { ok: false, error: '配置已保存，但停止旧进程失败：' + stopped.error };

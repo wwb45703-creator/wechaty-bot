@@ -63,11 +63,15 @@ export async function handleImageMessage(msg, room) {
     const bubbles = splitBubbles(comment)
     if (isRoom) {
       await sendBubbles(async (t, i) => {
+        logger.info(`[看图说话回复] 群[${topic}] -> ${t.slice(0, 60)}`)
         if (i === 0) await room.say(`@${name} ${t}`, talker)
         else await room.say(t)
       }, bubbles)
     } else {
-      await sendBubbles((t) => msg.say(t), bubbles)
+      await sendBubbles((t) => {
+        logger.info(`[看图说话回复私聊] ${name} -> ${t.slice(0, 60)}`)
+        return msg.say(t)
+      }, bubbles)
     }
     recordReply(key, 0)
   } catch (err) {

@@ -4,6 +4,7 @@ import { logger } from '../logger.js'
 import { handlePrivateMessage } from './private.js'
 import { handleRoomMessage } from './room.js'
 import { handleImageMessage, isVisionEnabled } from './on-image.js'
+import { handleEmoticonMessage, isEmoticonEnabled } from './on-emoticon.js'
 import { handleLinkMessage, hasProcessableLink } from './on-link.js'
 import { handleSearchMessage, detectSearchIntent } from './search.js'
 import { checkRoomTrigger } from './room.js'
@@ -40,6 +41,20 @@ export async function onMessage(msg) {
         await handleImageMessage(msg, room)
       }
       return // 图片消息不落入文本链路
+    }
+
+    // 表情包互动：当收到微信大表情/自定义表情包时趣味回应
+    if (type === types.Message.Emoticon && isEmoticonEnabled()) {
+      let admitted = await isAdmitted(msg, room)
+      if (admitted && room) {
+        const topic = await room.topic().catch(() => '')
+        const rc = findRoomConfig(topic, room.id)
+        admitted = Boolean(rc) && (rc.mode === 'all' || (await checkRoomTrigger(msg, text, rc)).triggered)
+      }
+      if (admitted) {
+        await handleEmoticonMessage(msg, room)
+      }
+      return
     }
 
     // 只处理"纯文本"消息：Text 类型，或 puppet-xp 判型失败但内容仍是普通文字的 Unknown
