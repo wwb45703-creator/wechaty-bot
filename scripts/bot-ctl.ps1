@@ -28,6 +28,8 @@ function Show-Status {
     $bot = Get-BotProc
     $sup = Get-SupProc
     $ollama = @(Get-Process -Name 'ollama' -ErrorAction SilentlyContinue).Count
+    $llamaRunners = @(Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue)
+    $llamaMemMB = if ($llamaRunners.Count -gt 0) { [math]::Round(($llamaRunners | Measure-Object -Property WorkingSet64 -Sum).Sum / 1MB, 1) } else { 0 }
     $wechat = @(Get-Process -Name 'WeChat' -ErrorAction SilentlyContinue).Count
     $task = schtasks /query /tn $taskName 2>$null
     $taskOk = ($LASTEXITCODE -eq 0)
@@ -37,7 +39,22 @@ function Show-Status {
     else { Write-Output '  开关状态      : 已启用' }
     Write-Output "  看门狗计划任务: $(if ($taskOk) { '已注册（每分钟体检）' } else { '未注册！' })"
     Write-Output "  机器人进程    : $(if ($bot.Count -gt 0) { '运行中' } else { '未运行' })"
-    Write-Output "  Ollama AI     : $(if ($ollama -gt 0) { '运行中' } else { '未运行' })"
+    $ollamaStatus = if ($ollama -gt 0) {
+        if ($llamaRunners.Count -gt 1) {
+            "运行中（警告：检测到 $($llamaRunners.Count) 个推理引擎进程，共占 ${llamaMemMB}MB，可能有残留）"
+        } elseif ($llamaRunners.Count -eq 1) {
+            "运行中（含 1 个活跃推理引擎，占用 ${llamaMemMB}MB）"
+        } else {
+            '运行中（空闲，未加载模型）'
+        }
+    } else {
+        if ($llamaRunners.Count -gt 0) {
+            "未运行（警告：发现 $($llamaRunners.Count) 个游离推理引擎进程，占 ${llamaMemMB}MB！）"
+        } else {
+            '未运行'
+        }
+    }
+    Write-Output "  Ollama AI     : $ollamaStatus"
     Write-Output "  守护循环进程  : $(if ($sup.Count -gt 0) { '有 ' + $sup.Count + ' 个（旧循环模式残留，计划任务模式下无影响）' } else { '无（正常，看门狗为计划任务模式）' })"
     Write-Output "  微信客户端    : $(if ($wechat -gt 0) { '运行中' } else { '未运行（需要你手动登录微信）' })"
     Write-Output '------------------------------------------------'
@@ -73,10 +90,11 @@ switch ($Action.ToLower()) {
             $botId = if ($_.Id) { $_.Id } else { $_.ProcessId }
             try { Stop-Process -Id $botId -Force -ErrorAction Stop; Write-Output "[stop] 已结束机器人进程 $botId" } catch {}
         }
-        # stop ollama
-        if (@(Get-Process -Name 'ollama' -ErrorAction SilentlyContinue).Count -gt 0) {
-            Stop-Process -Name 'ollama' -Force -ErrorAction SilentlyContinue
-            Write-Output '[stop] 已停止 Ollama AI 服务'
+        # stop ollama and all inference runners
+        $ollamaProcs = @(Get-Process -Name 'ollama', 'llama-server' -ErrorAction SilentlyContinue)
+        if ($ollamaProcs.Count -gt 0) {
+            $ollamaProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Output '[stop] 已停止 Ollama AI 服务及所有推理引擎'
         }
         Start-Sleep -Seconds 2
         Show-Status

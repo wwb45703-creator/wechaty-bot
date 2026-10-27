@@ -1,3 +1,6 @@
-' Stop Ollama silently (no console window): taskkill all ollama processes.
+' Stop Ollama silently (no console window): kill daemon and all runners.
 ' ASCII-only on purpose.
-CreateObject("WScript.Shell").Run "taskkill /F /IM ollama.exe", 0, False
+Dim sh
+Set sh = CreateObject("WScript.Shell")
+sh.Run "taskkill /F /T /IM ollama.exe", 0, True
+sh.Run "taskkill /F /IM llama-server.exe", 0, False

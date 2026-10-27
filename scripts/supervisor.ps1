@@ -74,11 +74,15 @@ function Start-Guarded {
 
     # guard local Ollama: skip if state\ollama-disabled.flag exists
     $ollamaFlag = Join-Path $botDir 'state\ollama-disabled.flag'
-    if (Test-Path $ollamaFlag) { return }
+    if (Test-Path $ollamaFlag) {
+        Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        return
+    }
     $ollamaAlive = Test-PortListening 11434
     if (-not $ollamaAlive) {
         $ollamaProc = Get-Process -Name 'ollama' -ErrorAction SilentlyContinue
         if (-not $ollamaProc) {
+            Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Log "ollama not running, starting..."
             $op = Start-HiddenProcess $ollamaExe 'serve' 'D:\Ollama'
             if ($op) { Log "ollama started, pid=$($op.Id)" }
