@@ -8,6 +8,8 @@ import { formatMemePrompt } from './reach/meme-radar.js'
 import { formatGroupLinguisticPrompt } from './personality/linguistic-mirror.js'
 import { formatRoomDirectivesPrompt } from './personality/room-directives.js'
 import { textSimilarity } from './utils.js'
+import { matchSkill, getSkillSOP } from './skills/skill-router.js'
+import { isUserCorrection, recordInteractionTrace } from './skills/tracer.js'
 
 /**
  * AI 模块：调用本地 Ollama 的 /api/chat 接口。
@@ -190,6 +192,20 @@ async function doChat({
     history.push({ role: 'user', content: userText })
   }
 
+  // 0. 渐进式技能匹配 (L0 路由 -> L1 SOP 动态装载)
+  const matchedSkill = matchSkill(userText)
+  const skillSOP = matchedSkill ? getSkillSOP(matchedSkill.id) : ''
+
+  // 0.1 用户显式纠错与意图沉淀捕获
+  if (isUserCorrection(userText)) {
+    recordInteractionTrace({
+      sessionId: key,
+      userText,
+      correction: userText,
+      actionName: matchedSkill?.id || 'conversation',
+    })
+  }
+
   // 1. 瞬时情绪动态计算
   processMessageStimulus(userText, isConflict)
 
@@ -209,8 +225,9 @@ async function doChat({
 3. 真实人类句式与结构：
    - 鼓励碎片化短句、反问、叹号、省略号（...）、语气词（哈、卧槽、笑死、啧、啊这、蚌埠住了、典、6）；
    - 遇到挑衅、催促、质疑时，毫不客气地回怼、吐槽、毒舌反问或冷淡敷衍，绝不当受气包，绝不虚伪道歉；
-4. 多气泡连发规范：
-   - 当情绪激动（暴躁开怼/上头大笑/连续吐槽）需要连发多句时，直接用 ||| 将各句隔开（最多3段），每段仅一两句话，非常适合抖包袱和微信真人连续弹消息体验；
+4. 回复长度与分段自适应（严禁刻意过多回复与刻意分段）：
+   - 必须严格根据对方说的话自然匹配回复长度，不需要刻意过多回复！对方说得简短（如一两句话），你就简短自然回复，严禁无事生非刻意长篇大论；
+   - 默认单条完整发送：绝大多数情况下直接单条气泡回复完毕即可，绝不要刻意每次都拆分成多段连发；只有在对方提问信息量极大或天然需分步时，才极度克制地用 ||| 分隔，日常闲聊切勿滥用 |||；
 5. 句末与整段绝对严禁多余括号与动作标注：
    - 绝对严禁在句末带孤立的半个括号（如“好的 (”、“行吧（”）；
    - 绝对严禁在整句话外包裹括号（如“（今天有事先走了）”或“(好啊 ||| 马上来)”）；
@@ -236,6 +253,7 @@ async function doChat({
     roomDirectivesPrompt,
     dynamicEmotion,
     relPrompt,
+    skillSOP,
     systemExtra ? `当前场景：${systemExtra}` : '',
     memoryText,
   ].filter(Boolean).join('\n\n')
@@ -342,6 +360,12 @@ async function doChat({
 
     return reply
   } catch (err) {
+    recordInteractionTrace({
+      sessionId: key,
+      userText,
+      actionName: matchedSkill?.id || 'chat_inference',
+      errorMessage: err.message,
+    })
     if (!isOnce && history) {
       history.pop() // 失败的输入不进记忆
     }

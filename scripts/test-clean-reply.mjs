@@ -62,6 +62,9 @@ ok('正文中合法的全角括号保留', cleanBubbleText('我玩的是（黑�
 ok('正文中合法的半角括号保留', cleanBubbleText('当前版本是 Node.js (v18.20) 环境') === '当前版本是 Node.js (v18.20) 环境')
 
 // 7. 多气泡连发中的括号畸形彻底拆解与净化
+const normalMultiline = splitBubbles('今天天气挺好的\n下午准备出门喝杯咖啡')
+ok('普通换行保持在单气泡内不强拆', normalMultiline.length === 1 && normalMultiline[0] === '今天天气挺好的\n下午准备出门喝杯咖啡')
+
 const bubbles1 = splitBubbles('嗯？怎么了？( ||| 你是不是又在搞什么鬼？)')
 ok('多气泡连发带孤立括号拆解成功', bubbles1.length === 2 && bubbles1[0] === '嗯？怎么了？' && bubbles1[1] === '你是不是又在搞什么鬼？')
 

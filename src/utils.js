@@ -120,10 +120,9 @@ export function textSimilarity(a, b) {
 
 /**
  * 拆分回复为多条气泡：
- * 1. 按 ||| 分隔（AI 显式连发意图）
- * 2. 各段内的换行也视为分条（对话式内容逐条连发更有活人感）
- * 3. 对每段气泡执行 cleanBubbleText，杜绝句末多余括号与乱码
- * 4. 气泡间高相似度去重（防单条回复内自言自语复读）
+ * 1. 仅在显式包含 ||| 连发分隔符时拆分气泡；未带 ||| 时默认单条完整发送（不按普通换行强拆，避免频繁弹消息轰炸）
+ * 2. 对每段气泡执行 cleanBubbleText，杜绝句末多余括号与乱码
+ * 3. 气泡间高相似度去重（防单条回复内自言自语复读）
  * 超过 max 条时，多余部分合并为最后一条（换行连接），不丢内容
  */
 export function splitBubbles(text, max = 3) {
@@ -144,9 +143,12 @@ export function splitBubbles(text, max = 3) {
     raw = raw.slice(1, -1).trim()
   }
 
-  const rawLines = raw
-    .split('|||')
-    .flatMap((s) => s.split(/\n+/))
+  // 仅在明确出现 ||| 连发分隔符时拆分；普通换行保持在单气泡内，尊重真人打字习惯
+  const rawSegments = raw.includes('|||')
+    ? raw.split('|||')
+    : [raw]
+
+  const rawLines = rawSegments
     .map((s) => cleanBubbleText(s))
     .filter(Boolean)
 

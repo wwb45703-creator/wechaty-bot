@@ -137,6 +137,7 @@ const suites = [
   { name: '拟真大跨度情绪动态与负面情绪原型专项测试', script: 'test-emotion-v2.mjs' },
   { name: '微信回复去乱码与句末去多余括号专项验收', script: 'test-clean-reply.mjs' },
   { name: '群聊用户指令记忆与防复读专项验收', script: 'test-room-directives-and-antirepeat.mjs' },
+  { name: '自进化技能引擎与安全执行门禁测试', script: 'verify-skills.mjs' },
 ]
 
 for (const suite of suites) {
