@@ -2,7 +2,7 @@ import config, { findRoomConfig } from '../config-loader.js'
 import { logger } from '../logger.js'
 import { chat, extractFacts, resetConversation, isAiDisabled } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
+import { splitBubbles, sendBubbles, stripAtMentions, cleanBubbleText } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 import { reflectOnMemories } from '../personality/reflection.js'
@@ -300,7 +300,7 @@ export async function handleRoomMessage(msg, room) {
     const bubbles = splitBubbles(reply)
     // @ 提醒只在需要时首条添加；AI 内容里的 @xx 全部剥离（防 "@额 @额" 叠加）
     await sendBubbles(async (t, i) => {
-      const clean = stripAtMentions(t, [name, selfName].filter(Boolean))
+      const clean = cleanBubbleText(stripAtMentions(t, [name, selfName].filter(Boolean)))
       if (!clean) return
       logger.info(`[回复群] 群[${topic}] -> ${clean.slice(0, 60)}`)
       if (i === 0 && shouldAt) await room.say(`@${name} ${clean}`, talker)
@@ -327,7 +327,8 @@ export async function handleRoomMessage(msg, room) {
       })
     }
   } else {
-    const fallbackText = isAiDisabled() ? '（AI 对话服务暂时未开启）' : config.ai?.fallbackReply
+    const rawFallback = isAiDisabled() ? 'AI 对话服务暂时未开启' : (config.ai?.fallbackReply || '网卡了，稍等再发一遍？')
+    const fallbackText = cleanBubbleText(rawFallback)
     await room.say(`@${name} ${fallbackText}`, talker).catch(() => {})
   }
 }

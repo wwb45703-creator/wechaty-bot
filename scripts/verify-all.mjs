@@ -135,6 +135,7 @@ const suites = [
   { name: 'AstrBot 控制台 IPC 桥接专项测试', script: 'test-ui-astrbot-ipc.mjs' },
   { name: '微信表情包互动专项测试', script: 'test-emoticon.mjs' },
   { name: '拟真大跨度情绪动态与负面情绪原型专项测试', script: 'test-emotion-v2.mjs' },
+  { name: '微信回复去乱码与句末去多余括号专项验收', script: 'test-clean-reply.mjs' },
 ]
 
 for (const suite of suites) {

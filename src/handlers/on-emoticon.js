@@ -18,7 +18,7 @@ import { applyStimulus } from '../personality/emotion.js'
 const EMOTICON_BANTERS = [
   '发这表情包是几个意思😂',
   '这表情包有点魔性啊，先收了👍',
-  '（盯——）这表情很传神啊',
+  '这表情很传神啊，盯——',
   '斗图是吧？我还没怕过谁🤡',
   '偷图了偷图了，归我了哈哈',
   '这小表情，有话直说嘛😄',

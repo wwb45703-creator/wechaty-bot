@@ -2,7 +2,7 @@ import config from '../config-loader.js'
 import { logger } from '../logger.js'
 import { chat, extractFacts, resetConversation, isAiDisabled } from '../ai.js'
 import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles } from '../utils.js'
+import { splitBubbles, sendBubbles, cleanBubbleText } from '../utils.js'
 import { isMemoryEnabled, formatForPrompt, appendFacts, clearMemory, getMemory } from '../memory.js'
 import { handlePersonaCommand, getActivePersonaName } from '../persona-commands.js'
 import { clearRelationship } from '../personality/relationship.js'
@@ -168,7 +168,8 @@ export async function handlePrivateMessage(msg) {
       })
     }
   } else {
-    const fallbackText = isAiDisabled() ? '（AI 对话服务暂时未开启）' : config.ai?.fallbackReply
+    const rawFallback = isAiDisabled() ? 'AI 对话服务暂时未开启' : (config.ai?.fallbackReply || '网卡了，稍等再发一遍？')
+    const fallbackText = cleanBubbleText(rawFallback)
     await msg.say(fallbackText).catch(() => {})
   }
 }
