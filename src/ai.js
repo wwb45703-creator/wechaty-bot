@@ -6,6 +6,8 @@ import { processMessageStimulus, formatEmotionPrompt } from './personality/emoti
 import { recordMemberInteraction, formatRelationshipPrompt } from './personality/relationship.js'
 import { formatMemePrompt } from './reach/meme-radar.js'
 import { formatGroupLinguisticPrompt } from './personality/linguistic-mirror.js'
+import { formatRoomDirectivesPrompt } from './personality/room-directives.js'
+import { textSimilarity } from './utils.js'
 
 /**
  * AI 模块：调用本地 Ollama 的 /api/chat 接口。
@@ -32,6 +34,7 @@ export function isAiDisabled() {
 /** 每个会话（私聊联系人 / 群）各自维护的对话记忆 */
 export const conversations = new Map()
 const chatQueues = new Map() // 每会话串行队列：防并发消息交错写坏对话历史
+const recentRepliesMap = new Map() // 会话最近发送内容缓存（用于防跨轮次复读车轱辘话）
 
 function trimHistory(key) {
   const list = conversations.get(key) || []
@@ -113,7 +116,12 @@ async function callOllama(messages, opts) {
         think: false,
         // 文本模型常驻显存（默认 2 小时），避免每波对话第一条消息等 12 秒冷加载
         keep_alive: aiConfig.keepAlive || '2h',
-        options: { temperature: o.temperature ?? aiConfig.temperature ?? 0.8 },
+        options: {
+          temperature: o.temperature ?? aiConfig.temperature ?? 0.8,
+          repeat_penalty: o.repeat_penalty ?? 1.18,
+          presence_penalty: o.presence_penalty ?? 0.4,
+          frequency_penalty: o.frequency_penalty ?? 0.3,
+        },
       }),
       signal: controller.signal,
     })
@@ -207,11 +215,16 @@ async function doChat({
    - 绝对严禁在句末带孤立的半个括号（如“好的 (”、“行吧（”）；
    - 绝对严禁在整句话外包裹括号（如“（今天有事先走了）”或“(好啊 ||| 马上来)”）；
    - 绝对严禁输出任何动作、神态、心理括号标注（如“（转头）”、“(叹气)”、“（翻白眼）”），真人网友聊天绝不打动作括号；
-   - 多气泡连发时，直接写“气泡1 ||| 气泡2”，严禁写“气泡1 (||| 气泡2)”或在前后加任何括号！`
+   - 多气泡连发时，直接写“气泡1 ||| 气泡2”，严禁写“气泡1 (||| 气泡2)”或在前后加任何括号！
+6. 绝对严禁复读与重复发言：
+   - 严禁重复自己在前几轮说过的话，严禁复读自己刚才用过的梗、口头禅或句式；
+   - 连发多气泡时，各气泡表达的内容必须互不相同，严禁多气泡自言自语复读同一句话；
+   - 每次发言都必须根据对方最新说的话给出全新的观点、反应或吐槽，绝不车轱辘话打转！`
 
   // 4. 当下互联网流行梗与群聊语言镜像
   const memePrompt = formatMemePrompt(3)
   const groupLinguisticPrompt = roomId ? formatGroupLinguisticPrompt(roomId) : ''
+  const roomDirectivesPrompt = roomId ? formatRoomDirectivesPrompt(roomId) : ''
 
   // 5. 组装全维度合成 Prompt
   const system = [
@@ -220,6 +233,7 @@ async function doChat({
     deAiPrompt,
     memePrompt,
     groupLinguisticPrompt,
+    roomDirectivesPrompt,
     dynamicEmotion,
     relPrompt,
     systemExtra ? `当前场景：${systemExtra}` : '',
@@ -239,6 +253,34 @@ async function doChat({
         logger.warn(`[${key}] 重试仍复述，按最后一次输出返回`)
       }
     }
+
+    // 防跨轮次复读车轱辘话检测与自愈
+    const recentList = recentRepliesMap.get(key) || []
+    const isRepeat = recentList.slice(-3).some((prev) => textSimilarity(prev, reply) >= 0.70)
+    if (isRepeat) {
+      logger.warn(`[${key}] 模型回复与近期发言雷同(相似度>=0.7)，启动换视角重试: "${reply.slice(0, 30)}"`)
+      const antiRepeatNotice = `\n\n【注意：你刚才已经说过类似的话（“${reply.slice(0, 30)}”），严禁复读重复发言或套用相同句式，必须换全新的视角、不同词句来回答！】`
+      const retryMessages = isOnce
+        ? [{ role: 'system', content: system + antiRepeatNotice }, { role: 'user', content: userText }]
+        : [{ role: 'system', content: system + antiRepeatNotice }, ...history]
+      try {
+        const freshReply = await callOllama(retryMessages, {
+          temperature: Math.min(1.0, (aiConfig.temperature || 0.8) + 0.15),
+        })
+        if (freshReply && textSimilarity(reply, freshReply) < 0.70) {
+          reply = freshReply
+        }
+      } catch (e) {
+        logger.warn(`[${key}] 防复读重试未完成，沿用原回复: ${e.message}`)
+      }
+    }
+
+    // 记录最新发言用于后续跨轮次防复读（保留最新 5 条）
+    if (!recentRepliesMap.has(key)) recentRepliesMap.set(key, [])
+    const rl = recentRepliesMap.get(key)
+    rl.push(reply)
+    if (rl.length > 5) rl.shift()
+
     if (!isOnce) {
       history.push({ role: 'assistant', content: reply })
       trimHistory(key)

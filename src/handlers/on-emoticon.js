@@ -26,6 +26,8 @@ const EMOTICON_BANTERS = [
   '6，这个表情包很有精神',
 ]
 
+const lastBanterMap = new Map() // key -> 上次使用的表情梗（防连续复读同一条）
+
 /** 是否启用表情包互动 */
 export function isEmoticonEnabled() {
   return config.emoticon?.enabled !== false
@@ -46,9 +48,15 @@ export async function handleEmoticonMessage(msg, room) {
       logger.info(`表情包互动冷却中（${isRoom ? `群[${topic}]` : '私聊'} ${name}）`)
       return
     }
+    // 立即打上冷却标记，防并发消息连带穿透
+    recordReply(key, 0)
 
-    // 随机选择一条符合鹅王口吻的趣味接梗
-    const replyText = EMOTICON_BANTERS[Math.floor(Math.random() * EMOTICON_BANTERS.length)]
+    // 随机选择一条符合口吻的接梗（过滤掉上次用过的，绝不连续复读同一句）
+    const lastBanter = lastBanterMap.get(key)
+    const candidates = EMOTICON_BANTERS.filter((b) => b !== lastBanter)
+    const pool = candidates.length > 0 ? candidates : EMOTICON_BANTERS
+    const replyText = pool[Math.floor(Math.random() * pool.length)]
+    lastBanterMap.set(key, replyText)
 
     // 更新即时情绪（受到表情包互动激发微量愉悦感与兴奋感）
     applyStimulus({ pleasureDelta: 5, arousalDelta: 5 })

@@ -10,6 +10,12 @@ import { recordGroupMessage } from '../personality/linguistic-mirror.js'
 import { detectImplicitSearchIntent } from './search.js'
 import { webSearch } from '../reach/search.js'
 import { isAstrBotCommand, chatWithAstrBot, isAstrBotAlive, listInstalledPlugins } from '../reach/astrbot-client.js'
+import {
+  captureDirectiveFromText,
+  recordRoomDirective,
+  getRoomDirectives,
+  clearRoomDirectives,
+} from '../personality/room-directives.js'
 
 /**
  * 群聊自动回复：
@@ -167,6 +173,8 @@ export async function handleRoomMessage(msg, room) {
     logger.info(`群[${topic}]冷却中（剩余 ${limit.remainingSeconds ?? '?'}s）`)
     return
   }
+  // 立即占位更新冷却，防并发消息连带穿透
+  recordReply(key, config.roomDailyLimit ?? 500)
 
   const question = cleanMention(text, selfName, rc)
   logger.info(`群[${topic}] ${name} -> ${question.slice(0, 50)}`)
@@ -180,6 +188,31 @@ export async function handleRoomMessage(msg, room) {
     await room.say(`@${name}\n${info}`, talker).catch(() => {})
     recordReply(key, 0)
     return
+  }
+
+  // 群指令与约定管理：查看或重置本群群友对机器人提出的口吻/称谓约定
+  if (['查看群指令', '群指令', '查看群约定', '群约定', '群要求'].includes(question)) {
+    const directives = getRoomDirectives(room.id)
+    if (!directives.length) {
+      await room.say(`@${name} 当前本群还没有记录特殊的群友指令与约定～日常直接对我说“每句话后面加xx”或“以后叫我xx”即可自动生效！`, talker)
+    } else {
+      const lines = directives.map((d, i) => `${i + 1}. [${d.userName} 约定] ${d.text} (${d.updatedAt})`)
+      await room.say(`@${name}\n📋 【本群生效中的群友指令与约定】\n${lines.join('\n')}\n（输入"重置群指令"可全部清空）`, talker)
+    }
+    recordReply(key, 0)
+    return
+  }
+  if (['重置群指令', '清除群指令', '清空群指令', '清空群约定'].includes(question)) {
+    clearRoomDirectives(room.id)
+    await room.say(`@${name} 好，本群的群友指令与对话约定已全部清空重置～`, talker)
+    recordReply(key, 0)
+    return
+  }
+
+  // 识别并自动记住本群群友提出的新口吻/新约定/指令要求（自动记录并注入 Prompt）
+  const capturedDirective = captureDirectiveFromText(question)
+  if (capturedDirective) {
+    recordRoomDirective(room.id, name, capturedDirective)
   }
 
   // 长期记忆：每群每人一份档案（room.id 稳定，不随群改名变化）

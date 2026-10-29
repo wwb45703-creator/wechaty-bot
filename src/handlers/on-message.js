@@ -26,9 +26,31 @@ async function isAdmitted(msg, room) {
   return wl.includes(name) || (alias && wl.includes(alias))
 }
 
+const processedMsgIds = new Map() // msgId -> timestamp (防 WeChat / Frida 消息事件重复推送)
+
+export function isDuplicateMessage(msgId) {
+  if (!msgId) return false
+  const now = Date.now()
+  if (processedMsgIds.size > 1000) {
+    for (const [id, time] of processedMsgIds.entries()) {
+      if (now - time > 60000) processedMsgIds.delete(id)
+    }
+  }
+  if (processedMsgIds.has(msgId)) {
+    return true
+  }
+  processedMsgIds.set(msgId, now)
+  return false
+}
+
 export async function onMessage(msg) {
   try {
     if (msg.self()) return // 忽略机器人自己发的
+    const msgId = msg.id
+    if (isDuplicateMessage(msgId)) {
+      logger.info(`[去重] 收到重复消息事件已忽略: id=${msgId}`)
+      return
+    }
     const text = msg.text()
     const room = msg.room() // wechaty 1.20 中是同步方法：私聊返回 null/undefined
     const type = msg.type()

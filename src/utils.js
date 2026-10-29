@@ -84,10 +84,46 @@ export function cleanBubbleText(text) {
 }
 
 /**
+ * 计算两段中文/英文文本的相似度 (0 ~ 1)：
+ * 结合 2-gram Jaccard 切片与包含占比，快速拦截近义复读与车轱辘话
+ */
+export function textSimilarity(a, b) {
+  if (!a || !b) return 0
+  const s1 = String(a).replace(/[\s\p{P}]/gu, '')
+  const s2 = String(b).replace(/[\s\p{P}]/gu, '')
+  if (s1 === s2) return 1
+  if (!s1 || !s2) return 0
+
+  // 包含关系且长度覆盖度高
+  if (s1.includes(s2) && s2.length / s1.length >= 0.75) return s2.length / s1.length
+  if (s2.includes(s1) && s1.length / s2.length >= 0.75) return s1.length / s2.length
+
+  // 2-gram Jaccard 切片匹配
+  const getBigrams = (str) => {
+    const set = new Set()
+    for (let i = 0; i < str.length - 1; i++) {
+      set.add(str.slice(i, i + 2))
+    }
+    return set
+  }
+  const bg1 = getBigrams(s1)
+  const bg2 = getBigrams(s2)
+  if (bg1.size === 0 || bg2.size === 0) {
+    return s1 === s2 ? 1 : 0
+  }
+  let intersection = 0
+  for (const item of bg1) {
+    if (bg2.has(item)) intersection++
+  }
+  return (2 * intersection) / (bg1.size + bg2.size)
+}
+
+/**
  * 拆分回复为多条气泡：
  * 1. 按 ||| 分隔（AI 显式连发意图）
  * 2. 各段内的换行也视为分条（对话式内容逐条连发更有活人感）
  * 3. 对每段气泡执行 cleanBubbleText，杜绝句末多余括号与乱码
+ * 4. 气泡间高相似度去重（防单条回复内自言自语复读）
  * 超过 max 条时，多余部分合并为最后一条（换行连接），不丢内容
  */
 export function splitBubbles(text, max = 3) {
@@ -108,11 +144,21 @@ export function splitBubbles(text, max = 3) {
     raw = raw.slice(1, -1).trim()
   }
 
-  const lines = raw
+  const rawLines = raw
     .split('|||')
     .flatMap((s) => s.split(/\n+/))
     .map((s) => cleanBubbleText(s))
     .filter(Boolean)
+
+  // 消息内气泡去重：若后一条气泡与已有气泡相似度 >= 0.70，则过滤掉复读气泡
+  const lines = []
+  for (const item of rawLines) {
+    if (lines.length > 0) {
+      const isDuplicate = lines.some((prev) => textSimilarity(prev, item) >= 0.70)
+      if (isDuplicate) continue
+    }
+    lines.push(item)
+  }
 
   if (lines.length <= max) return lines
   return [...lines.slice(0, max - 1), lines.slice(max - 1).join('\n')]
