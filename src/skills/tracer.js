@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { dataPath } from '../runtime-paths.js'
+import { captureEpoch, isEpochCurrent, withSocialWriteLock } from '../social/index.js'
 import { createSkillCandidate, proposeBundledExample, removeCandidatesFromTraces } from './review-store.js'
 
 const traceDir = () => dataPath('state', 'proposals')
@@ -26,18 +27,22 @@ function classify({ userText = '', correction = '', errorMessage = '' }) {
 export function recordInteractionTrace(payload = {}) {
   const scopeRefs = scopeReferences(payload.scope)
   if (!scopeRefs || (!payload.userText && !payload.errorMessage && !payload.correction)) return null
-  const key = hash(JSON.stringify(scopeRefs))
-  const now = Date.now()
-  if (now - (lastRecorded.get(key) || 0) < 30000) return null
-  lastRecorded.set(key, now)
-  if (lastRecorded.size > 1000) lastRecorded.delete(lastRecorded.keys().next().value)
-  const id = `trace_${crypto.randomUUID()}`
-  // Classification is computed in memory. No raw text, names, URLs or error
-  // messages enter this durable record, even when they contain secrets.
-  const trace = { version: 2, id, timestamp: new Date(now).toISOString(), scopeRefs, category: classify(payload), action: ['safe_fetch', 'reach_search', 'conversation'].includes(payload.actionName) ? payload.actionName : 'tool', status: 'pending_review' }
-  fs.mkdirSync(traceDir(), { recursive: true })
-  fs.writeFileSync(path.join(traceDir(), `${id}.json`), JSON.stringify(trace, null, 2), 'utf8')
-  return trace
+  const epoch = payload.epoch ?? captureEpoch(payload.scope)
+  return withSocialWriteLock(() => {
+    if (!isEpochCurrent(payload.scope, epoch)) return null
+    const key = hash(JSON.stringify(scopeRefs))
+    const now = Date.now()
+    if (now - (lastRecorded.get(key) || 0) < 30000) return null
+    lastRecorded.set(key, now)
+    if (lastRecorded.size > 1000) lastRecorded.delete(lastRecorded.keys().next().value)
+    const id = `trace_${crypto.randomUUID()}`
+    // Classification is computed in memory. No raw text, names, URLs or error
+    // messages enter this durable record, even when they contain secrets.
+    const trace = { version: 2, id, timestamp: new Date(now).toISOString(), scopeRefs, epoch, category: classify(payload), action: ['safe_fetch', 'reach_search', 'conversation'].includes(payload.actionName) ? payload.actionName : 'tool', status: 'pending_review' }
+    fs.mkdirSync(traceDir(), { recursive: true })
+    fs.writeFileSync(path.join(traceDir(), `${id}.json`), JSON.stringify(trace, null, 2), 'utf8')
+    return trace
+  })
 }
 export function listInteractionTraces() {
   if (!fs.existsSync(traceDir())) return []
@@ -53,31 +58,33 @@ export function generateCandidateFromTrace(traceId) {
   return createSkillCandidate({ id: 'concise-reply', name: '简短单条回复', description: '由纠错分类生成的保守模板；不是模型自主训练', triggers: ['不要回这么长|不要分段|短一点'], sop: '当对方明确要求简短或单条时，用一至两句回应当前问题，保持事实完整。复杂问题可以先给重点，避免机械连发。' }, { kind: 'trace-template', traceId, category: trace.category })
 }
 export function purgeSubjectTraces(scope, { allConversations = false } = {}) {
-  const target = scopeReferences(scope)
-  if (!target) return { removed: 0 }
-  let removed = 0
-  const errors = []
-  // Do not use the UI's 200-item presentation limit for deletion.
-  let names = []
-  try { names = fs.readdirSync(traceDir()) } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
-  for (const name of names) {
-    if (!/^trace_[a-zA-Z0-9_-]+\.json$/.test(name)) continue
-    const file = path.join(traceDir(), name)
-    let trace
-    try {
-      trace = JSON.parse(fs.readFileSync(file, 'utf8'))
-    } catch (error) { if (error.code !== 'ENOENT') errors.push(error); continue }
-    const r = trace.scopeRefs
-    if (!r || r.platform !== target.platform || r.accountRef !== target.accountRef || r.subjectRef !== target.subjectRef || (!allConversations && r.conversationRef !== target.conversationRef)) continue
-    try {
-      // Keep this attribution until dependent files are gone. The review-store
-      // also keeps an intent if just one of a candidate/evaluation pair fails.
-      removeCandidatesFromTraces([...new Set([name.slice(0, -5), trace.id].filter((id) => typeof id === 'string' && /^trace_[a-zA-Z0-9_-]+$/.test(id)))])
-      fs.unlinkSync(file)
-      removed++
-    } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
-  }
-  lastRecorded.clear()
-  if (errors.length) throw new AggregateError(errors, '轨迹和候选清理尚未完成，请重试遗忘')
-  return { removed }
+  return withSocialWriteLock(() => {
+    const target = scopeReferences(scope)
+    if (!target) return { removed: 0 }
+    let removed = 0
+    const errors = []
+    // Do not use the UI's 200-item presentation limit for deletion.
+    let names = []
+    try { names = fs.readdirSync(traceDir()) } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
+    for (const name of names) {
+      if (!/^trace_[a-zA-Z0-9_-]+\.json$/.test(name)) continue
+      const file = path.join(traceDir(), name)
+      let trace
+      try {
+        trace = JSON.parse(fs.readFileSync(file, 'utf8'))
+      } catch (error) { if (error.code !== 'ENOENT') errors.push(error); continue }
+      const r = trace.scopeRefs
+      if (!r || r.platform !== target.platform || r.accountRef !== target.accountRef || r.subjectRef !== target.subjectRef || (!allConversations && r.conversationRef !== target.conversationRef)) continue
+      try {
+        // Keep this attribution until dependent files are gone. The review-store
+        // also keeps an intent if just one of a candidate/evaluation pair fails.
+        removeCandidatesFromTraces([...new Set([name.slice(0, -5), trace.id].filter((id) => typeof id === 'string' && /^trace_[a-zA-Z0-9_-]+$/.test(id)))])
+        fs.unlinkSync(file)
+        removed++
+      } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
+    }
+    lastRecorded.clear()
+    if (errors.length) throw new AggregateError(errors, '轨迹和候选清理尚未完成，请重试遗忘')
+    return { removed }
+  })
 }

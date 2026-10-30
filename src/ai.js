@@ -166,7 +166,7 @@ async function doChat({ key, userText, systemExtra = '', memoryText = '', person
   const matched = diagnostic ? null : matchSkill(userText)
   let skillResult = ''
   if (!diagnostic && isUserCorrection(userText)) {
-    recordInteractionTrace({ sessionId: key, scope: normalized, userText,
+    recordInteractionTrace({ sessionId: key, scope: normalized, epoch, userText,
       correction: userText, actionName: matched?.id || 'conversation' })
   }
   try {
@@ -174,7 +174,7 @@ async function doChat({ key, userText, systemExtra = '', memoryText = '', person
       const result = await executeSkillPipeline(matched.dsl, { input: userText }, { signal })
       if (!current()) return null
       if (result.ok) skillResult = JSON.stringify(result.context).slice(0, 2000)
-      else recordInteractionTrace({ sessionId: key, scope: normalized, userText,
+      else recordInteractionTrace({ sessionId: key, scope: normalized, epoch, userText,
         actionName: matched.id, errorMessage: result.error })
     }
     const system = buildContext({ config: configRef, scope: normalized, personaName, memoryText,
@@ -196,7 +196,7 @@ async function doChat({ key, userText, systemExtra = '', memoryText = '', person
     return reply
   } catch (err) {
     if (current()) {
-      if (!diagnostic) recordInteractionTrace({ sessionId: key, scope: normalized, userText,
+      if (!diagnostic) recordInteractionTrace({ sessionId: key, scope: normalized, epoch, userText,
         actionName: matched?.id || 'chat_inference', errorMessage: err.message })
       if (!isOnce && history?.at(-1)?.role === 'user') history.pop()
     }

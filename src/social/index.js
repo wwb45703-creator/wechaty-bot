@@ -90,9 +90,38 @@ function acquireLock() {
     return acquireLock()
   }
 }
-function mutate(operation) {
+let writerDepth = 0
+function clearInterruptedWrites() {
+  // All writers of these stores share this lock. An abrupt process exit can
+  // leave an atomic-write temporary containing an older private snapshot.
+  const visit = (dir) => {
+    if (!fs.existsSync(dir)) return
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue
+      const file = path.join(dir, entry.name)
+      if (entry.isDirectory()) visit(file)
+      else if (entry.isFile() && /\.(?:\d+\.[a-f0-9]{10}|[a-f0-9-]{36})\.tmp$/.test(entry.name)) fs.unlinkSync(file)
+    }
+  }
+  for (const name of ['social', 'skills', 'proposals']) visit(dataPath('state', name))
+}
+// Keep all synchronous derived writes in the same critical section as deletion
+// generations. Never retain this lock across an async operation.
+export function withSocialWriteLock(operation) {
+  if (writerDepth) return operation()
   acquireLock()
+  writerDepth++
   try {
+    const result = operation()
+    if (result && typeof result.then === 'function') throw new Error('社交写锁不允许异步操作')
+    return result
+  } finally {
+    try { clearInterruptedWrites() }
+    finally { writerDepth--; try { fs.unlinkSync(LOCK) } catch {} }
+  }
+}
+function mutate(operation) {
+  return withSocialWriteLock(() => {
     const doc = journal()
     const result = operation(doc)
     if (result?.unchanged) return result.value
@@ -100,7 +129,7 @@ function mutate(operation) {
     atomicJson(JOURNAL, doc) // This is the commit point. The view is disposable and replayable.
     try { atomicJson(SNAPSHOT, derive(doc)) } catch { /* Rebuild from journal on next read. */ }
     return result?.value
-  } finally { try { fs.unlinkSync(LOCK) } catch {} }
+  })
 }
 
 function queueLegacyCleanup(doc, scope, relative) {
@@ -108,6 +137,18 @@ function queueLegacyCleanup(doc, scope, relative) {
   const id = hash(`${deletionKey(scope)}:${relative}`)
   doc.cleanupPending ||= []
   if (!doc.cleanupPending.some(item => item.id === id)) doc.cleanupPending.push({ id, scope: clone(scope), relative })
+}
+
+function queueInterruptedMigrationCleanup(doc, scope, { allConversations = false } = {}) {
+  const dir = dataPath('state', 'social', 'migration-intents')
+  if (!fs.existsSync(dir)) return
+  for (const name of fs.readdirSync(dir)) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue
+    const file = path.join(dir, name), intent = readJson(file, null), s = intent?.scope
+    if (!s || s.platform !== scope.platform || s.accountId !== scope.accountId || s.subjectId !== scope.subjectId ||
+        (!allConversations && s.conversationId !== scope.conversationId)) continue
+    for (const relative of [intent.source, intent.backup, path.relative(dataPath(), file)]) queueLegacyCleanup(doc, s, relative)
+  }
 }
 
 // A failed unlink must retain its durable intent even after migration attribution is removed.
@@ -134,13 +175,23 @@ function drainLegacyCleanup(ref, { allConversations = false, allSubjects = false
 
 export function captureEpoch(ref) {
   const s = normalizeScope(ref), doc = journal()
-  return { conversationKey: epochKey(s), subjectKey: epochKey(s, true), account: doc.epochs[accountEpochKey(s)] || 0, conversation: doc.epochs[epochKey(s)] || 0, subject: doc.epochs[epochKey(s, true)] || 0, capturedAt: Date.now() }
+  return { accountKey: accountEpochKey(s), conversationKey: epochKey(s), subjectKey: epochKey(s, true), account: doc.epochs[accountEpochKey(s)] || 0, conversation: doc.epochs[epochKey(s)] || 0, subject: doc.epochs[epochKey(s, true)] || 0, capturedAt: Date.now() }
 }
 function current(doc, s, token) {
   const deletedAt = Math.max(doc.epochTimes?.[epochKey(s)] || 0, doc.epochTimes?.[epochKey(s, true)] || 0, doc.epochTimes?.[accountEpochKey(s)] || 0)
   return Boolean(token) && (!token.conversationKey || token.conversationKey === epochKey(s)) && (!token.subjectKey || token.subjectKey === epochKey(s, true)) && token.account === (doc.epochs[accountEpochKey(s)] || 0) && token.conversation === (doc.epochs[epochKey(s)] || 0) && token.subject === (doc.epochs[epochKey(s, true)] || 0) && (token.capturedAt === undefined || token.capturedAt >= deletedAt)
 }
 export function isEpochCurrent(ref, token) { return current(journal(), normalizeScope(ref), token) }
+// A durable proof contains only opaque hashes, so skill traces can be checked
+// without persisting account, room or member IDs a second time.
+export function isCapturedEpochCurrent(token) {
+  const keys = ['accountKey', 'conversationKey', 'subjectKey']
+  if (!token || keys.some(key => !/^[a-f0-9]{64}$/.test(token[key] || '')) ||
+      !['account', 'conversation', 'subject', 'capturedAt'].every(key => Number.isFinite(token[key]) && token[key] >= 0)) return false
+  const doc = journal()
+  return ['account', 'conversation', 'subject'].every(key => token[key] === (doc.epochs[token[`${key}Key`]] || 0)) &&
+    token.capturedAt >= Math.max(...keys.map(key => doc.epochTimes?.[token[key]] || 0))
+}
 export function registerForgetHook(hook) { hooks.add(hook); return () => hooks.delete(hook) }
 
 const TOPICS = [
@@ -321,6 +372,9 @@ export function forgetSubject(ref, { allConversations = false } = {}) {
       doc.epochTimes[accountEpochKey(s)] = Date.now()
     }
     doc.events = doc.events.filter((e) => !(e.scope.platform === s.platform && e.scope.accountId === s.accountId && e.scope.subjectId === s.subjectId && (allConversations || e.scope.conversationId === s.conversationId)))
+    // The main migration commit may never have completed. Its write-ahead
+    // manifests still identify every backup written before that commit.
+    queueInterruptedMigrationCleanup(doc, s, { allConversations })
     const files = []
     if (doc.migration?.accountId === s.accountId) {
       doc.migration.imported = doc.migration.imported.filter((entry) => {
@@ -399,15 +453,21 @@ export function migrateLegacy({ accountId = 'default', defaultPersona = configur
     const manifest = { version: 1, at: now(), accountId: clean(accountId), defaultPersona, roleMapping: clone(mapping), imported: [], legacyRelationships: [], warnings: [], status: 'complete' }
     const ingest = (file, ref) => {
       const s = normalizeScope({ ...ref, accountId })
+      const source = path.relative(dataPath(), file)
+      const sourceHash = hash(source)
+      const backup = `state/social/migration-backup/${sourceHash}.json`
+      const intent = `state/social/migration-intents/${sourceHash}.json`
       if (doc.deletions?.[deletionKey(s)] || doc.deletions?.[deletionKey(s, true)] || doc.epochs?.[epochKey(s, true)]) {
-        queueLegacyCleanup(doc, s, path.relative(dataPath(), file))
+        for (const relative of [source, backup, intent]) queueLegacyCleanup(doc, s, relative)
         manifest.skippedDeleted = (manifest.skippedDeleted || 0) + 1
         return
       }
       let old
       try { old = readJson(file, null) } catch (error) { manifest.warnings.push(`${path.relative(dataPath(), file)}: ${error.message}`); return }
       if (!old) return
-      const backup = `state/social/migration-backup/${hash(path.relative(dataPath(), file))}.json`
+      // Commit attribution before copying private facts. A crash or journal
+      // rename failure must not leave an unidentifiable backup behind.
+      atomicJson(dataPath(intent), { version: 1, source, backup, scope: s })
       atomicJson(dataPath(backup), old)
       const id = `migration:${hash(path.relative(dataPath(), file))}`
       const oldFacts = [...(old.semantics || []), ...(old.facts || [])].map((f) => typeof f === 'string' ? f : { text: f.text, key: f.key, confidence: f.confidence })

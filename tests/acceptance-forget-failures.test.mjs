@@ -14,6 +14,7 @@ const stateSource = new URL('../src/state.js', import.meta.url).href
 const dslSource = new URL('../src/skills/dsl-executor.js', import.meta.url).href
 const providerSource = new URL('../src/model-provider.js', import.meta.url).href
 const rateSource = new URL('../src/rate-limit.js', import.meta.url).href
+const aiSource = new URL('../src/ai.js', import.meta.url).href
 const scope = { platform: 'wechat', accountId: 'acceptance-bot', conversationId: 'private:fixture-user', personaId: 'A', subjectId: 'fixture-user' }
 
 function isolated(code, { timeout = 10000 } = {}) {
@@ -184,4 +185,120 @@ test('acceptance: crash between quota reservation and outbox association release
   `)
   assert.equal(result.allowed, true, 'a response that never reached generation must not strand the daily quota')
   assert.equal(result.holds, 0)
+})
+
+test('acceptance: cross-process forget prevents a correction trace after an earlier epoch read', () => {
+  const result = isolated(`
+    const ai=await import(${JSON.stringify(aiSource)});
+    const tracer=await import(${JSON.stringify(tracerSource)});
+    ai.initAi({defaultPersona:'A',personas:{A:'合成验收角色'},ai:{model:'fixture'}},
+      {provider:{generate:async()=>({text:'合成回复'})}});
+    social.recordObservation({scope,sourceId:'initialize-journal',facts:[],epoch:social.captureEpoch(scope)});
+    const epoch=social.captureEpoch(scope);
+    const journal=path.join(root,'state','social','journal.json');
+    const realRead=fs.readFileSync; let didForget=false;
+    fs.readFileSync=(file,...args)=>{
+      const content=realRead(file,...args);
+      if(!didForget && typeof file==='string' && path.resolve(file)===journal){
+        didForget=true;
+        const child=spawnSync(process.execPath,['--input-type=module','-e',
+          'const s=await import('+JSON.stringify(${JSON.stringify(source)})+'); const t=await import('+JSON.stringify(${JSON.stringify(tracerSource)})+'); const scope='+JSON.stringify(scope)+'; await s.forgetSubject(scope); t.purgeSubjectTraces(scope);'],
+          {env:process.env,encoding:'utf8',windowsHide:true,timeout:5000});
+        if(child.status!==0) throw new Error(child.error?.message || child.stderr);
+      }
+      return content;
+    };
+    let reply;
+    try {reply=await ai.chat({key:'acceptance-correction-race',userText:'不要回这么长',scope,epoch})}
+    finally {fs.readFileSync=realRead}
+    console.log(JSON.stringify({didForget,reply,traces:tracer.listInteractionTraces().length,current:social.isEpochCurrent(scope,epoch)}));
+  `, { timeout: 15000 })
+  assert.equal(result.didForget, true, 'the fixture must complete a real cross-process deletion at the old-read boundary')
+  assert.equal(result.current, false)
+  assert.equal(result.reply, null)
+  assert.equal(result.traces, 0, 'a correction classified from an old generation must not recreate forgotten attribution')
+})
+
+test('acceptance: a cached trace cannot create a candidate after cross-process forgetting', () => {
+  const result = isolated(`
+    const tracer=await import(${JSON.stringify(tracerSource)});
+    const review=await import(${JSON.stringify(reviewSource)});
+    const trace=tracer.recordInteractionTrace({scope,userText:'不要回这么长',epoch:social.captureEpoch(scope)});
+    if(!trace) throw new Error('fixture trace was not recorded');
+    const traceFile=path.join(root,'state','proposals',trace.id+'.json');
+    const realRead=fs.readFileSync; let didForget=false, rejected=false;
+    fs.readFileSync=(file,...args)=>{
+      const content=realRead(file,...args);
+      if(!didForget && typeof file==='string' && path.resolve(file)===traceFile){
+        didForget=true;
+        const child=spawnSync(process.execPath,['--input-type=module','-e',
+          'const s=await import('+JSON.stringify(${JSON.stringify(source)})+'); const t=await import('+JSON.stringify(${JSON.stringify(tracerSource)})+'); const scope='+JSON.stringify(scope)+'; await s.forgetSubject(scope); t.purgeSubjectTraces(scope);'],
+          {env:process.env,encoding:'utf8',windowsHide:true,timeout:5000});
+        if(child.status!==0) throw new Error(child.error?.message || child.stderr);
+      }
+      return content;
+    };
+    try {tracer.generateCandidateFromTrace(trace.id)} catch {rejected=true} finally {fs.readFileSync=realRead}
+    console.log(JSON.stringify({didForget,rejected,traceRemains:fs.existsSync(traceFile),candidates:review.listSkillReviews().candidates.length}));
+  `, { timeout: 15000 })
+  assert.equal(result.didForget, true)
+  assert.equal(result.traceRemains, false)
+  assert.equal(result.candidates, 0, 'a stale in-memory source must not restore a candidate after its subject was forgotten')
+})
+
+test('acceptance: forgetting cleans a migration backup written before the manifest commit failed', () => {
+  const result = isolated(`
+    const original=path.join(root,'memories','private','fixture-user.json');
+    fs.mkdirSync(path.dirname(original),{recursive:true});
+    fs.writeFileSync(original,JSON.stringify({facts:[{text:'迁移中断前的合成私人背景'}]}));
+    const backupDir=path.join(root,'state','social','migration-backup');
+    const journal=path.join(root,'state','social','journal.json');
+    const countBackups=()=>fs.existsSync(backupDir)?fs.readdirSync(backupDir).filter(name=>name.endsWith('.json')).length:0;
+    const realRename=fs.renameSync; let interrupted=false;
+    fs.renameSync=(from,to)=>{
+      if(!interrupted && path.resolve(to)===journal && countBackups()>0){
+        interrupted=true;
+        throw new Error('fixture failure after backup and before manifest commit');
+      }
+      return realRename(from,to);
+    };
+    let migrationRejected=false;
+    try {social.migrateLegacy({accountId:scope.accountId,defaultPersona:'A'})}
+    catch {migrationRejected=true} finally {fs.renameSync=realRename}
+    const backupsBefore=countBackups();
+    await social.forgetSubject(scope);
+    social.migrateLegacy({accountId:scope.accountId,defaultPersona:'A'});
+    console.log(JSON.stringify({interrupted,migrationRejected,backupsBefore,backupsAfter:countBackups(),sourceRemains:fs.existsSync(original),facts:social.getSocialState(scope).memory.facts.length}));
+  `)
+  assert.equal(result.interrupted, true, 'the fixture must fail only after the private migration backup exists')
+  assert.equal(result.migrationRejected, true)
+  assert.ok(result.backupsBefore > 0)
+  assert.equal(result.facts, 0)
+  assert.equal(result.sourceRemains, false)
+  assert.equal(result.backupsAfter, 0, 'pre-commit migration backups must remain attributable and be deleted by forgetting')
+})
+
+test('acceptance: forgetting removes interrupted private atomic writes without deleting ordinary files', () => {
+  const result = isolated(`
+    const socialDir=path.join(root,'state','social');
+    const backupDir=path.join(socialDir,'migration-backup');
+    const candidatesDir=path.join(root,'state','skills','candidates');
+    const proposalsDir=path.join(root,'state','proposals');
+    for(const dir of [backupDir,candidatesDir,proposalsDir]) fs.mkdirSync(dir,{recursive:true});
+    const stale=JSON.stringify({facts:['应随遗忘删除的旧合成私人背景']});
+    const interrupted=[
+      path.join(socialDir,'journal.json.987654.0123456789.tmp'),
+      path.join(backupDir,'a'.repeat(64)+'.json.987654.abcdef0123.tmp'),
+      path.join(candidatesDir,'candidate_fixture.json.01234567-89ab-4cde-8fab-0123456789ab.tmp'),
+      path.join(proposalsDir,'trace_fixture.json.01234567-89ab-4cde-8fab-0123456789ab.tmp'),
+    ];
+    const ordinary=[path.join(backupDir,'unrelated.json'),path.join(candidatesDir,'ordinary.json'),path.join(socialDir,'notes.tmp')];
+    for(const file of interrupted) fs.writeFileSync(file,stale);
+    for(const file of ordinary) fs.writeFileSync(file,'unrelated fixture must survive');
+    await social.forgetSubject(scope);
+    console.log(JSON.stringify({remainingInterrupted:interrupted.filter(file=>fs.existsSync(file)).length,
+      ordinaryUnchanged:ordinary.every(file=>fs.readFileSync(file,'utf8')==='unrelated fixture must survive')}));
+  `)
+  assert.equal(result.remainingInterrupted, 0, 'a forgotten snapshot must not survive in abandoned atomic-write temporaries')
+  assert.equal(result.ordinaryUnchanged, true, 'privacy cleanup must not delete unrelated ordinary files')
 })

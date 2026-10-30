@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dataPath } from '../runtime-paths.js'
+import { isCapturedEpochCurrent, withSocialWriteLock } from '../social/index.js'
 import { compileSafeRegex, executeSkillPipeline, validateSkillDefinition } from './dsl-executor.js'
 
 const SOURCE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'evolved')
@@ -14,8 +15,10 @@ function read(file, fallback = null) { try { return JSON.parse(fs.readFileSync(f
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${crypto.randomUUID()}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
-  fs.renameSync(tmp, file)
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
+    fs.renameSync(tmp, file)
+  } finally { try { fs.rmSync(tmp, { force: true }) } catch {} }
 }
 function assertId(id) { if (typeof id !== 'string' || !ID.test(id) || Object.hasOwn(Object.prototype, id)) throw new Error('无效的技能或候选编号'); return id }
 function canonical(value) {
@@ -38,6 +41,14 @@ function validContent(content) {
   if (content.executionPlan) { const v = validateSkillDefinition(content); if (!v.ok) throw new Error(v.error) }
 }
 function candidateFile(id) { return storePath('candidates', `${assertId(id)}.json`) }
+function requireCurrentSource(sources) {
+  if (!sources?.traceId && sources?.kind !== 'trace-template') return
+  if (typeof sources?.traceId !== 'string' || !/^trace_[a-zA-Z0-9_-]+$/.test(sources.traceId)) throw new Error('来源轨迹不存在或已遗忘')
+  // Always reload under the same writer lock used by forgetting. A cached trace
+  // from the review UI must never recreate an already-forgotten attribution.
+  const trace = read(dataPath('state', 'proposals', `${sources.traceId}.json`))
+  if (trace?.version !== 2 || trace.id !== sources.traceId || !isCapturedEpochCurrent(trace.epoch)) throw new Error('来源轨迹不存在或已遗忘')
+}
 export function getSkillReview(id) {
   const candidate = read(candidateFile(id))
   if (!candidate) throw new Error('候选不存在')
@@ -46,15 +57,18 @@ export function getSkillReview(id) {
   return { ...candidate, evaluation: read(storePath('evaluations', `${id}.json`)), activeHash: reg.active[candidate.content.id] || null, previous: prior?.content || null }
 }
 export function createSkillCandidate(content, source = {}) {
-  validContent(content)
-  // Sources contain identifiers only. Never accept a raw message or a user name here.
-  const sources = { kind: ['bundled-example', 'trace-template', 'manual'].includes(source.kind) ? source.kind : 'manual', traceId: ID.test(source.traceId || '') ? source.traceId : null, category: ID.test(source.category || '') ? source.category : null }
-  const hash = contentHash(content)
-  const id = `candidate_${crypto.randomUUID()}`
-  const candidate = { version: 1, id, content: canonical(content), hash, sources, status: 'pending', createdAt: new Date().toISOString() }
-  write(candidateFile(id), candidate)
-  audit('candidate-created', { id, skillId: content.id, hash })
-  return candidate
+  return withSocialWriteLock(() => {
+    validContent(content)
+    // Sources contain identifiers only. Never accept a raw message or a user name here.
+    const sources = { kind: ['bundled-example', 'trace-template', 'manual'].includes(source.kind) ? source.kind : 'manual', traceId: ID.test(source.traceId || '') ? source.traceId : null, category: ID.test(source.category || '') ? source.category : null }
+    requireCurrentSource(sources)
+    const hash = contentHash(content)
+    const id = `candidate_${crypto.randomUUID()}`
+    const candidate = { version: 1, id, content: canonical(content), hash, sources, status: 'pending', createdAt: new Date().toISOString() }
+    write(candidateFile(id), candidate)
+    audit('candidate-created', { id, skillId: content.id, hash })
+    return candidate
+  })
 }
 export function listBundledExamples() {
   if (!fs.existsSync(SOURCE_DIR)) return []
@@ -88,9 +102,13 @@ const FIXTURES = Object.freeze([
 ])
 function triggersMatch(content, input) { return content.triggers.some((t) => compileSafeRegex(typeof t === 'string' ? t : t.pattern, typeof t === 'string' ? 'i' : t.flags || 'i').test(input.slice(0, 2048))) }
 export async function evaluateCandidate(id) {
-  const candidate = getSkillReview(id)
-  validContent(candidate.content)
-  if (contentHash(candidate.content) !== candidate.hash) throw new Error('候选内容哈希不匹配')
+  const candidate = withSocialWriteLock(() => {
+    const value = getSkillReview(id)
+    validContent(value.content)
+    if (contentHash(value.content) !== value.hash) throw new Error('候选内容哈希不匹配')
+    requireCurrentSource(value.sources)
+    return value
+  })
   const checks = []
   // SOP-only learning is intentionally confined to a human-reviewed short-reply
   // template. We cannot claim a static test measures LLM social quality.
@@ -116,35 +134,49 @@ export async function evaluateCandidate(id) {
     checks.push({ id: 'deny-dangerous-regex', passed: !validateSkillDefinition({ executionPlan: { pipeline: [{ action: 'regex_extract', params: { pattern: '(a+)+$' } }] } }).ok })
   }
   const evaluation = { candidateId: id, hash: candidate.hash, evaluator: EVALUATOR_VERSION, fixtureHash: contentHash(FIXTURES), passed: checks.every((c) => c.passed), checks, at: new Date().toISOString(), network: 'mock-only' }
-  write(storePath('evaluations', `${id}.json`), evaluation)
-  audit('evaluated', { id, hash: candidate.hash, passed: evaluation.passed })
-  return evaluation
+  return withSocialWriteLock(() => {
+    // The evaluator deliberately releases the lock across every await. Re-read
+    // before publishing so deletion or editing cannot leave an orphaned result.
+    const current = getSkillReview(id)
+    if (current.hash !== candidate.hash || contentHash(current.content) !== candidate.hash || contentHash(current.sources) !== contentHash(candidate.sources)) throw new Error('候选内容或来源已变更，请重新评测')
+    requireCurrentSource(current.sources)
+    write(storePath('evaluations', `${id}.json`), evaluation)
+    audit('evaluated', { id, hash: candidate.hash, passed: evaluation.passed })
+    return evaluation
+  })
 }
 export function activateCandidate(id, { expectedHash, reviewed = false } = {}) {
-  const candidate = getSkillReview(id)
-  validContent(candidate.content)
-  if (!reviewed || expectedHash !== candidate.hash || contentHash(candidate.content) !== candidate.hash) throw new Error('须人工确认当前内容哈希')
-  if (candidate.status === 'rejected') throw new Error('已拒绝的候选不能启用')
-  const evaluation = candidate.evaluation
-  if (!evaluation?.passed || evaluation.hash !== candidate.hash || evaluation.candidateId !== id || evaluation.evaluator !== EVALUATOR_VERSION || evaluation.fixtureHash !== contentHash(FIXTURES)) throw new Error('当前版本尚未通过独立离线评测')
-  const approval = { content: candidate.content, hash: candidate.hash, approvedAt: new Date().toISOString(), evaluation, candidateId: id }
-  write(storePath('versions', candidate.content.id, `${candidate.hash}.json`), approval)
-  const reg = registry()
-  const history = reg.history[candidate.content.id] || []
-  if (!history.includes(candidate.hash)) history.push(candidate.hash)
-  reg.history[candidate.content.id] = history
-  reg.active[candidate.content.id] = candidate.hash
-  write(storePath('registry.json'), reg)
-  write(candidateFile(id), { ...candidate, status: 'active', evaluation: undefined, previous: undefined })
-  audit('human-activated', { id, skillId: candidate.content.id, hash: candidate.hash })
-  return { ok: true, hash: candidate.hash }
+  return withSocialWriteLock(() => {
+    const candidate = getSkillReview(id)
+    validContent(candidate.content)
+    requireCurrentSource(candidate.sources)
+    if (!reviewed || expectedHash !== candidate.hash || contentHash(candidate.content) !== candidate.hash) throw new Error('须人工确认当前内容哈希')
+    if (candidate.status === 'rejected') throw new Error('已拒绝的候选不能启用')
+    const evaluation = candidate.evaluation
+    if (!evaluation?.passed || evaluation.hash !== candidate.hash || evaluation.candidateId !== id || evaluation.evaluator !== EVALUATOR_VERSION || evaluation.fixtureHash !== contentHash(FIXTURES)) throw new Error('当前版本尚未通过独立离线评测')
+    const { candidateId: _candidateId, ...approvedEvaluation } = evaluation
+    const approval = { content: candidate.content, hash: candidate.hash, approvedAt: new Date().toISOString(), evaluation: approvedEvaluation }
+    write(storePath('versions', candidate.content.id, `${candidate.hash}.json`), approval)
+    const reg = registry()
+    const history = reg.history[candidate.content.id] || []
+    if (!history.includes(candidate.hash)) history.push(candidate.hash)
+    reg.history[candidate.content.id] = history
+    reg.active[candidate.content.id] = candidate.hash
+    write(storePath('registry.json'), reg)
+    write(candidateFile(id), { ...candidate, status: 'active', evaluation: undefined, previous: undefined })
+    audit('human-activated', { id, skillId: candidate.content.id, hash: candidate.hash })
+    return { ok: true, hash: candidate.hash }
+  })
 }
 export function rejectCandidate(id) {
-  const c = getSkillReview(id)
-  if (registry().active[c.content.id] === c.hash) throw new Error('此版本正在使用，请先停用技能或回滚到其他版本')
-  write(candidateFile(id), { ...c, status: 'rejected', evaluation: undefined, previous: undefined })
-  audit('human-rejected', { id, hash: c.hash })
-  return { ok: true }
+  return withSocialWriteLock(() => {
+    const c = getSkillReview(id)
+    requireCurrentSource(c.sources)
+    if (registry().active[c.content.id] === c.hash) throw new Error('此版本正在使用，请先停用技能或回滚到其他版本')
+    write(candidateFile(id), { ...c, status: 'rejected', evaluation: undefined, previous: undefined })
+    audit('human-rejected', { id, hash: c.hash })
+    return { ok: true }
+  })
 }
 export function loadApprovedVersion(skillId, hash) {
   if (!ID.test(skillId) || !HASH.test(hash || '')) return null
@@ -156,60 +188,87 @@ export function getActiveSkillVersions() {
   return Object.entries(registry().active).map(([id, hash]) => loadApprovedVersion(id, hash)).filter(Boolean)
 }
 export function rollbackSkill(skillId, hash, { reviewed = false } = {}) {
-  assertId(skillId)
-  const reg = registry()
-  if (!reviewed || !(reg.history[skillId] || []).includes(hash) || !loadApprovedVersion(skillId, hash)) throw new Error('只能人工回滚到已审批的有效版本')
-  reg.active[skillId] = hash
-  write(storePath('registry.json'), reg)
-  audit('human-rollback', { skillId, hash })
-  return { ok: true, hash }
+  return withSocialWriteLock(() => {
+    assertId(skillId)
+    const reg = registry()
+    if (!reviewed || !(reg.history[skillId] || []).includes(hash) || !loadApprovedVersion(skillId, hash)) throw new Error('只能人工回滚到已审批的有效版本')
+    reg.active[skillId] = hash
+    write(storePath('registry.json'), reg)
+    audit('human-rollback', { skillId, hash })
+    return { ok: true, hash }
+  })
 }
 export function deactivateSkill(skillId, { reviewed = false } = {}) {
-  assertId(skillId)
-  if (!reviewed) throw new Error('须人工确认停用技能')
-  const reg = registry()
-  const previousHash = reg.active[skillId] || null
-  delete reg.active[skillId]
-  write(storePath('registry.json'), reg)
-  audit('human-deactivated', { skillId, previousHash })
-  return { ok: true }
+  return withSocialWriteLock(() => {
+    assertId(skillId)
+    if (!reviewed) throw new Error('须人工确认停用技能')
+    const reg = registry()
+    const previousHash = reg.active[skillId] || null
+    delete reg.active[skillId]
+    write(storePath('registry.json'), reg)
+    audit('human-deactivated', { skillId, previousHash })
+    return { ok: true }
+  })
 }
 export function removeCandidatesFromTraces(traceIds) {
-  if (!Array.isArray(traceIds) || traceIds.some((id) => typeof id !== 'string' || !/^trace_[a-zA-Z0-9_-]+$/.test(id))) throw new Error('无效的来源轨迹编号')
-  const sortedIds = [...new Set(traceIds)].sort()
-  if (!sortedIds.length) return { removed: 0 }
-  const ids = new Set(sortedIds), candidateIds = new Set(), errors = []
-  const intentFile = storePath('cleanup', `${contentHash(sortedIds)}.json`)
-  // The intent survives deletion of either candidate or evaluation. A retry must
-  // not need to read the already-deleted candidate to recover its source link.
-  try {
-    const intent = JSON.parse(fs.readFileSync(intentFile, 'utf8'))
-    if (JSON.stringify(intent.traceIds) !== JSON.stringify(sortedIds) || !Array.isArray(intent.candidateIds)) throw new Error('候选清理意图格式无效')
-    for (const id of intent.candidateIds) { assertId(id); candidateIds.add(id) }
-  } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
-  const dir = storePath('candidates')
-  let files = []
-  try { files = fs.readdirSync(dir) } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
-  for (const name of files) {
-    if (!/^candidate_[a-zA-Z0-9_-]+\.json$/.test(name)) continue
+  return withSocialWriteLock(() => {
+    if (!Array.isArray(traceIds) || traceIds.some((id) => typeof id !== 'string' || !/^trace_[a-zA-Z0-9_-]+$/.test(id))) throw new Error('无效的来源轨迹编号')
+    const sortedIds = [...new Set(traceIds)].sort()
+    if (!sortedIds.length) return { removed: 0 }
+    const ids = new Set(sortedIds), candidateIds = new Set(), errors = []
+    const intentFile = storePath('cleanup', `${contentHash(sortedIds)}.json`)
+    // The intent survives deletion of either candidate or evaluation. A retry must
+    // not need to read the already-deleted candidate to recover its source link.
     try {
-      const candidate = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
-      if (ids.has(candidate.sources?.traceId)) candidateIds.add(name.slice(0, -5))
+      const intent = JSON.parse(fs.readFileSync(intentFile, 'utf8'))
+      if (JSON.stringify(intent.traceIds) !== JSON.stringify(sortedIds) || !Array.isArray(intent.candidateIds)) throw new Error('候选清理意图格式无效')
+      for (const id of intent.candidateIds) { assertId(id); candidateIds.add(id) }
     } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
-  }
-  // Persist before attempting any delete, including deletes which may succeed
-  // while another file is locked. Failure to persist fails closed.
-  try { write(intentFile, { version: 1, traceIds: sortedIds, candidateIds: [...candidateIds].sort() }) }
-  catch (error) { throw new AggregateError([...errors, error], '无法持久化候选清理意图，请重试遗忘') }
-  let removed = 0
-  for (const id of candidateIds) {
-    for (const file of [storePath('evaluations', `${id}.json`), candidateFile(id)]) {
-      try { fs.rmSync(file, { force: true }); removed++ } catch (error) { errors.push(error) }
+    const dir = storePath('candidates')
+    let files = []
+    try { files = fs.readdirSync(dir) } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
+    for (const name of files) {
+      if (!/^candidate_[a-zA-Z0-9_-]+\.json$/.test(name)) continue
+      try {
+        const candidate = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+        if (ids.has(candidate.sources?.traceId)) candidateIds.add(name.slice(0, -5))
+      } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
     }
-  }
-  if (!errors.length) {
-    try { fs.rmSync(intentFile, { force: true }) } catch (error) { errors.push(error) }
-  }
-  if (errors.length) throw new AggregateError(errors, '技能候选清理尚未完成，请重试遗忘')
-  return { removed }
+    // Persist before attempting any delete, including deletes which may succeed
+    // while another file is locked. Failure to persist fails closed.
+    try { write(intentFile, { version: 1, traceIds: sortedIds, candidateIds: [...candidateIds].sort() }) }
+    catch (error) { throw new AggregateError([...errors, error], '无法持久化候选清理意图，请重试遗忘') }
+    // Keep human-approved abstract templates, but erase links back to their
+    // private review records, including versions written by older releases.
+    const versionsDir = storePath('versions')
+    let skillNames = []
+    try { skillNames = fs.readdirSync(versionsDir, { withFileTypes: true }) } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
+    for (const skill of skillNames) {
+      if (!skill.isDirectory() || !ID.test(skill.name)) continue
+      let versions = []
+      try { versions = fs.readdirSync(path.join(versionsDir, skill.name)) } catch (error) { if (error.code !== 'ENOENT') errors.push(error); continue }
+      for (const name of versions) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) continue
+        const file = path.join(versionsDir, skill.name, name)
+        try {
+          const approval = JSON.parse(fs.readFileSync(file, 'utf8'))
+          if (!candidateIds.has(approval.candidateId) && !candidateIds.has(approval.evaluation?.candidateId)) continue
+          delete approval.candidateId
+          if (approval.evaluation) delete approval.evaluation.candidateId
+          write(file, approval)
+        } catch (error) { if (error.code !== 'ENOENT') errors.push(error) }
+      }
+    }
+    let removed = 0
+    for (const id of candidateIds) {
+      for (const file of [storePath('evaluations', `${id}.json`), candidateFile(id)]) {
+        try { fs.rmSync(file, { force: true }); removed++ } catch (error) { errors.push(error) }
+      }
+    }
+    if (!errors.length) {
+      try { fs.rmSync(intentFile, { force: true }) } catch (error) { errors.push(error) }
+    }
+    if (errors.length) throw new AggregateError(errors, '技能候选清理尚未完成，请重试遗忘')
+    return { removed }
+  })
 }
