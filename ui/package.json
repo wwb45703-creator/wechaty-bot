@@ -20,12 +20,15 @@
       "main.js",
       "ipc-policy.js",
       "preload.js",
-      "renderer/**/*"
+      "renderer/app.js",
+      "renderer/index.html",
+      "renderer/style.css"
     ],
     "extraResources": [
       {
         "from": "../src",
-        "to": "bot-runtime/src"
+        "to": "bot-runtime/src",
+        "filter": ["**/*", "!**/.*/**", "!**/.*"]
       },
       {
         "from": "../package.json",
