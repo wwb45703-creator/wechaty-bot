@@ -1,7 +1,8 @@
 {
   "id": "jina-doc-reader",
-  "name": "技术文档免翻墙抓取",
-  "description": "遇到技术官网、开发文档或 API 手册时，走 Jina 抓取通道提取干净正文",
+  "name": "技术文档安全抓取",
+  "description": "只通过统一安全抓取器读取用户提供的公开文档地址；样例须评测并人工启用",
+  "reviewStatus": "pending",
   "triggers": [
     "(官方文档|技术文档|api\\s*手册|开发指南)"
   ],
@@ -12,16 +13,15 @@
       {
         "action": "regex_extract",
         "params": {
-          "pattern": "https?://[^\\s]+"
+          "pattern": "(https?://[^\\s<>]+)"
         },
         "exportAs": "extractedUrl"
       },
       {
         "action": "safe_fetch",
         "params": {
-          "url": "https://r.jina.ai/{{$1}}"
-        },
-        "ignoreError": true
+          "url": "{{$1}}"
+        }
       }
     ]
   }

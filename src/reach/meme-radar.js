@@ -1,3 +1,4 @@
+import { dataPath } from '../runtime-paths.js'
 /**
  * meme-radar.js — 实时网络热梗雷达 (Meme Radar RAG)
  *
@@ -14,7 +15,7 @@ import { logger } from '../logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..', '..')
-const MEME_FILE = path.join(rootDir, 'state', 'meme-radar.json')
+const MEME_FILE = dataPath('state', 'meme-radar.json')
 
 // 初始高频互联网当红热梗库（涵盖日常冲浪、反讽调侃、情绪表达）
 const INITIAL_MEMES = [

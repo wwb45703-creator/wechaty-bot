@@ -1,217 +1,76 @@
-# 微信机器人控制台 · 主进程接口契约（window.botctl）
+# 微信机器人控制台接口契约
 
-> 本文档供 renderer/ 界面侧对照使用。由 `ui/preload.js` 通过 `contextBridge` 暴露，
-> 渲染层不接触任何 Node / Electron API，只能调用 `window.botctl` 上的方法。
->
-> 通道名即方法名；除 `onStatus` / `pickGgufFile` 外，全部基于 `ipcRenderer.invoke`。
+## 安全与运行目录
 
----
+渲染进程仅使用 `window.botctl`。所有 IPC 验证主窗口、主 frame、本地 renderer URL 和显式通道白名单；拒绝子 frame、外部 URL 和其他窗口。`contextIsolation=true`、`nodeIntegration=false`、`sandbox=true`。
 
-## 1. 状态对象（Status）
+- `BOT_PROJECT_ROOT`：外部项目目录，默认 `D:\wechaty-bot`。
+- `BOT_DATA_ROOT`：配置、社交状态、审核记录等运行数据，默认项目目录。
+- `BOT_CONFIG_FILE`：配置文件的显式路径；仅在正常模式采用。
+- 业务模块优先加载完整外部源码（包含 social/review/runtime-paths），否则统一加载随包附带的 `resources/bot-runtime/src`；避免新旧模块混用。
+- 关闭控制台不会停止后台机器人。启停使用现有 PID / VBS 机制，不生成控制台窗口。
 
-主进程**每 3 秒**计算一次并推送到所有窗口（`botctl.onStatus(cb)` 订阅，通道 `'status'`）；
-也可以用 `botctl.getStatus()` 主动拉取一次（结构与推送完全相同）。
+## 社交状态与遗忘
 
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `flag` | `boolean` | 停用标记 `D:\wechaty-bot\state\bot-disabled.flag` 是否存在。`true` = 机器人处于"已停用"保护状态（通常是刚点过"停止"），`startBot` 会自动清除它 |
-| `botRunning` | `boolean` | bot（node src/index.js）进程是否在运行。判定方式：PowerShell 查 `Win32_Process`，**只匹配命令行含 `src[/\]index.js` 的 node 进程**，绝不按进程名判断 |
-| `botPid` | `number \| null` | bot 进程 PID；未运行时为 `null` |
-| `ollamaRunning` | `boolean` | Ollama 是否可用：API（`http://127.0.0.1:11434`，2 秒超时）可达 **或** `ollama.exe` 进程存在。注意：进程刚拉起、API 还没就绪时也会是 `true`，模型列表是否真正可用以 `getModels` 结果为准 |
-| `wechatRunning` | `boolean` | 微信客户端是否在运行（`Get-Process WeChat`） |
-| `currentModel` | `string` | `config.json` 里的 `ai.model`；读取失败为空字符串 |
-
-状态推送是"尽力而为"：某一轮检测失败不会报错，等下一轮即可。
-
----
-
-## 2. API 一览
-
-### 通用错误格式
-
-除 `pickGgufFile` 外，所有方法失败时返回：
+`ScopeRef` 必须包含五个非空字符串：
 
 ```js
-{ ok: false, error: '中文错误信息' }
+{ platform: 'wechat', accountId, conversationId, personaId, subjectId }
 ```
 
-成功时返回各自的结构（见下）。**渲染层调用前建议统一判断 `res.ok`（`pickGgufFile` 除外）。**
+群名和昵称不是查询键。控制台的“社交成长”页选择完整范围后，展示角色五维与基线、关系、情绪、有限表达偏好、事实、共同经历、语义记录及其 `sourceId`。同一成员在其他群和其他角色的具体记忆不会混入所选详情。
 
----
+| 方法 | 结果与行为 |
+| --- | --- |
+| `listSocialScopes()` | `{ok,list}`，范围与计数元数据，不返回聊天原文。 |
+| `getSocialScope(scope)` | `{ok,data}`，只返回该范围的权威 social journal 派生状态。 |
+| `forgetSocialSubject({scope,allConversations,confirmed:true})` | `allConversations=false` 删除该会话中该用户的所有角色记录；`true` 扩展到此账号全部会话。持久删除代际使旧任务失效，清理相关轨迹与来源候选。 |
 
-### `botctl.getStatus()` → Status
+所有删除都必须明确确认范围；不删除微信平台聊天记录或其他用户数据。未完成的派生清理会返回错误，不能宣称已全部清理。
 
-立即计算并返回一次状态快照（结构同第 1 节）。初始化时拉一次，之后靠 `onStatus` 推送即可。
+旧“人格状态 / 关系网络 / 记忆档案”导航统一转到社交成长页。兼容 IPC 不再读取 `memories/*.json`、旧全局情绪/人格文件或关系 JSON：
 
----
+- `getPersonaState(scope)`、`getEmotionState(scope)`、`getMemoryDetail(scope)`、`getRelationship(scope)`、`listMemories(scope)`、`listRelationships(scope)` 要求完整范围；无范围返回 `{ok:false,scopeRequired:true,error}`。
+- `getPersonaHistory()` 返回范围选择提示；审核来源请查看所选社交详情的事件 ID，不读取旧全局日志冒充当前历史。
+- `deleteMemory(request)`、`deleteRelationship(request)` 只是完整遗忘请求的兼容别名；旧文件路径或裸用户 ID 一律拒绝，不能直接 unlink 文件后宣称遗忘成功。
 
-### `botctl.startBot()` → `{ ok: true, pid: number }`
+## 技能审核、停用与回滚
 
-启动 bot 的行为顺序：
+普通聊天只形成脱敏分类轨迹，不记录原文、昵称、URL 或错误正文。固定模板提案不代表模型权重训练；技能默认不生效。
 
-1. 若停用标记 `state/bot-disabled.flag` 存在 → 先删除；
-2. 防重复：若检测到 bot 已在运行 → `{ ok: false, error: '机器人已在运行（PID xxx）' }`，不会重复拉起；
-3. 用便携 Node（`runtime\node18\node.exe`，不存在则回退 PATH 中的 `node`）以 **detached** 方式启动 `src/index.js`（cwd = `D:\wechaty-bot`）；
-4. stdout / stderr 追加写入 `logs\bot-console.log`，stdin 关闭，不弹控制台黑窗；
-5. 返回新进程 `{ ok: true, pid }`。
+| 方法 | 约定 |
+| --- | --- |
+| `listSkillReviews()` | `{ok,candidates,examples,active,history,traces}`。 |
+| `getSkillReview(id)` | `{ok,data}`，含来源、当前内容、之前内容、绑定哈希的评测。 |
+| `proposeSkill({kind,id})` | kind 仅 `bundled-example` 或 `trace-template`，生成待审候选。 |
+| `evaluateSkill(id)` | 使用独立固定 fixtures；网络动作全部 mock；返回逐项结果。 |
+| `activateSkill({id,hash,confirmed:true})` | 内容哈希与通过的评测完全一致，并由用户确认，才可启用。 |
+| `rejectSkill(id)` | 拒绝待审候选；当前生效的版本须先停用。 |
+| `deactivateSkill({skillId,confirmed:true})` | 清除有效版本指针，保留历史与审核审计；未确认不执行。 |
+| `rollbackSkill({skillId,hash,confirmed:true})` | 只能选择已审核并通过评测的历史版本；停用后同样可以恢复已审版本。 |
 
-### `botctl.stopBot()` → `{ ok: true }`
+候选、评测、版本、索引与审计保存在 `state/skills/`，不会自动修改仓库源码。源码 metadata 自称 approved 不构成授权。界面显示来源和内容差异，并要求当前版本确认。
 
-1. **先**写入停用标记 `state/bot-disabled.flag`（防止任何守护脚本随后又拉起 bot）；
-2. **再**用 PowerShell 精确停止：`Stop-Process -Id`，只杀命令行含 `src[/\]index.js` 的 node 进程。
-   没有匹配进程时同样返回 `{ ok: true }`（幂等）。
+## 进程、模型与基础接口
 
-> 注意：停止后 `flag` 会保持存在（这是有意设计），对应状态里 `flag: true`；点"启动"会自动清除。
+- `getStatus()` 返回 `{flag,botRunning,botPid,ollamaRunning,currentModel}`；PID 文件用于探活。`onStatus(callback)` 订阅每 3 秒的状态并返回取消函数。
+- `startBot()` / `stopBot()`、`startOllama()` / `stopOllama()` 保留现有开关语义。控制台关闭不影响 bot。
+- `getModels()`、`getLoadedModels()`、`loadModel(name)`、`unloadModel(name)` 访问本机 Ollama。
+- `setCurrentModel(name)` 原子保存模型选择；仅 bot 运行时执行重启，成功返回 `{ok,restarted}`。
+- `pickGgufFile()` 返回路径或 null；`importModel({name,path})` 校验模型名、文件存在与 GGUF 魔数后，经 HTTP blob/create 导入，不拼接 shell 命令。
+- `testChat(text)` 或 `testChat({text,scope})` 使用同一个 `initAi → generateOnce → chat` 队列与上下文构造器做本地诊断；旧字符串请求仅默认角色、不读取用户记忆，完整 scope 请求才读取所选背景。不发送微信、不写成长、历史或学习提案、不执行技能；模型地址只接受 loopback Ollama。
+- `getLogs(lines)` 有界读取日志尾部；`getAutostart()` / `setAutostart(enabled)` 管理启动目录的 VBS 文件。
+- AstrBot 的状态、插件、知识库和服务管理接口保持原有名称，只由用户明确操作。
 
-### `botctl.getModels()` → `{ ok: true, models: [{ name: string, size: number }] }`
+除了 `getStatus()` 和正常取消的 `pickGgufFile()`，失败统一返回 `{ok:false,error}`。渲染层必须检查 `ok`，不能把错误对象当作成功状态。
 
-- 请求 Ollama `/api/tags`（3 秒超时），返回已安装模型列表，`size` 为字节数；
-- Ollama 未运行 / 超时 / 解析失败 → `{ ok: false, error: 'Ollama 未运行' }`（固定文案）。
+## 隔离打包验收
 
-### `botctl.setCurrentModel(name: string)` → `{ ok: true, restarted: boolean }`
+`BOT_UI_SMOKE=1` 或 `--isolated-smoke`：
 
-1. 校验 `name` 非空；
-2. 读 `config.json` → 修改 `ai.model` → 先写 `config.json.tmp`，再 `rename` 原子覆盖回 `config.json`；
-3. 若 bot **正在运行** → 自动先 `stopBot` 再 `startBot` 让新模型立即生效（`restarted: true`）；
-   若没运行 → 只改配置（`restarted: false`）；
-4. 若"配置已保存但重启失败"，返回 `{ ok: false, error: '配置已保存，但…' }`——此时配置已生效，下次手动启动即可。
+1. 强制创建独立临时数据目录与配置，忽略继承的 `BOT_CONFIG_FILE`，不覆盖已有配置。
+2. 仅加载自身打包 runtime 或源码，绝不加载旧生产模块。
+3. 拒绝真实进程控制、联网、模型调用与自启修改；只允许隔离的技能/社交接口。
+4. 窗口始终隐藏。`BOT_UI_SMOKE_REPORT` 指定输出文件时，加载后检查接口和隔离防线，输出 JSON 并自动退出；`BOT_UI_SMOKE_SCREENSHOT` 可额外指定 PNG 路径。`BOT_UI_SMOKE_PAGE` 可选 home / skill-review / social-growth，默认截取 social-growth。
 
-### `botctl.importModel({ name: string, path: string })` → `{ ok: boolean, log: string }`
-
-把本地 GGUF 文件导入 Ollama（`ollama create`）。**同步等待，最长 10 分钟**，UI 侧务必做成不可重复点击的等待态。
-
-校验顺序（任一不过返回 `{ ok: false, error }`）：
-
-- `name`：`/^[a-z0-9][a-z0-9._:-]{0,61}$/i`（字母/数字开头，可含 `. _ : -`，最长 61 位）；
-- `path`：必须以 `.gguf` 结尾，否则提示 **"需先用 llama.cpp 的 convert_hf_to_gguf.py 转换"**；
-- 文件必须存在，且前 4 字节为 `GGUF`（防选错文件）；
-- `D:\Ollama\ollama.exe` 必须存在，且 Ollama 服务必须在运行。
-
-通过后：在临时目录写一行式 Modelfile（`FROM <gguf绝对路径>`）→ `ollama create <name> -f <modelfile>` → 返回 `{ ok: 退出码===0, log: 'stdout+stderr 全文' }`（**UI 应把 log 展示出来**）。临时 Modelfile 用后即删。
-
-### `botctl.getLogs(lines?: number)` → `{ ok: true, lines: string[] }`
-
-- 读取 `logs\bot-console.log` 尾部 `lines` 行（默认 30，限制 1~1000）；
-- 大日志只读文件末尾 128KB，性能稳定；
-- 日志文件不存在时返回 `{ ok: true, lines: [] }`（空数组，不是错误）。
-
-### `botctl.startOllama()` → `{ ok: true, alreadyRunning: boolean }`
-
-- `ollama.exe` 进程不存在时，以 detached 方式启动 `ollama serve`（`D:\Ollama\ollama.exe`）；
-- 已在运行则直接成功（幂等，`alreadyRunning: true`）。
-
-### `botctl.pickGgufFile()` → `string | null`  ⚠️ 特殊约定
-
-弹出系统文件选择框（过滤器：GGUF 模型 `*.gguf`）。
-
-- 用户选中 → 返回**绝对路径字符串**；
-- 用户取消 → 返回 `null`；
-- 对话框本身出错 → `{ ok: false, error }`（唯一可能返回对象的情况）。
-
-> 这是唯一**不遵循 `{ ok }` 包装**的通道：请用 `typeof r === 'string'` 判断是否选到了文件。
-
-### `botctl.getMemoryDetail(rel: string)` → `{ ok: true, data: object }`
-
-- 获取指定相对路径的长期记忆 JSON 全文内容。
-
-### `botctl.getPersonaState()` → `{ ok: true, persona: object }`
-
-- 读取 `state/persona-state.json`，包含当前五维人格特征（`traits`）、性格基线（`baselineTraits`）、波动安全边界（`traitBounds`）、动态生长爱好（`hobbies`）及最近演化时间戳。
-
-### `botctl.getEmotionState()` → `{ ok: true, emotion: object }`
-
-- 读取当前短期情绪状态快照（`pleasure` 愉悦度、`arousal` 兴奋度、`tension` 紧张度、`fatigue` 社交疲劳度）。
-
-### `botctl.getPersonaHistory(limit?: number)` → `{ ok: true, history: Array }`
-
-- 读取 `logs/persona-evolution.log` 最近演化审计日志并结构化解析返回（按时间倒序）。
-
-### `botctl.listRelationships()` → `{ ok: true, list: Array }`
-
-- 扫描 `state/relationships/` 目录，返回所有成员关系画像，按熟悉度（`familiarity`）倒序排列。
-
-### `botctl.getRelationship(userId: string)` → `{ ok: true, data: object }`
-
-- 获取指定成员的关系画像详情。
-
-### `botctl.deleteRelationship(userId: string)` → `{ ok: true }`
-
-- 删除指定成员的关系画像。
-
-### `botctl.astrbotGetStatus()` → `{ ok: true, data: object }`
-
-- 获取本地 AstrBot 运行时状态，包含服务在线探针、端口、版本、已安装插件列表及知识库统计。
-
-### `botctl.astrbotGetPlugins()` → `{ ok: true, list: Array }`
-
-- 获取本地已安装的 AstrBot 插件元数据列表。
-
-### `botctl.astrbotSearchMarket(keyword?: string)` → `{ ok: true, list: Array }`
-
-- 检索官方 2800+ 社区插件市场，支持名称、简介、作者模糊搜索。
-
-### `botctl.astrbotTogglePlugin({ name: string, enabled: boolean })` → `{ ok: boolean }`
-
-- 实时启用或禁用指定插件。
-
-### `botctl.astrbotInstallPlugin(repoUrl: string)` → `{ ok: boolean, message?: string }`
-
-- 从 Git/GitHub 在线拉取并安装插件。
-
-### `botctl.astrbotGetKnowledgeBases()` → `{ ok: true, list: Array, data: Array }`
-
-- 读取当前知识库列表与切片数量统计。
-
-### `botctl.astrbotQueryKnowledgeBase({ kbId: string, query: string, topK?: number })` → `{ ok: boolean, chunks: Array }`
-
-- 在指定知识库执行 RAG 检索测试，返回匹配的内容切片。
-
-### `botctl.astrbotToggleService(action: 'start' | 'stop')` → `{ ok: boolean }`
-
-- 启动或停止本地 AstrBot 守护进程（纯后台静默调度，零闪窗）。
-
-### `botctl.onStatus(callback: (status: Status) => void)` → `() => void`
-
-- 订阅每 3 秒一次的状态推送（通道 `'status'`）；
-- 返回**取消订阅函数**，页面/组件销毁时请调用，避免重复回调；
-- 传入非函数时返回空操作，不会报错。
-
----
-
-## 3. 重要行为说明（界面侧必读）
-
-1. **关闭控制台窗口 ≠ 停止机器人。** 所有窗口关闭时控制台应用退出（`window-all-closed → app.quit`），
-   但 bot 是 detached 独立进程，会在后台继续运行。想停 bot 必须点"停止"按钮（`stopBot`）。
-2. **bot 进程识别绝不含糊。** 只按"命令行匹配 `src/index.js`"精确判定和停止 node 进程，
-   不会误杀机器上其他 node 服务；界面上不要自己用"是否有 node 进程"做判断，一律以 `botRunning` / `botPid` 为准。
-3. **flag 的语义是"停用保护"。** `stopBot` 落盘 `state/bot-disabled.flag`；`startBot` 第一步就删它。
-   界面可将 `flag: true && !botRunning` 显示为"已停用"。
-4. **切模型会重启 bot（仅在它运行时）。** 重启是"先停后启"，期间 `botRunning` 会短暂变为 `false`，属正常现象。
-5. **导入模型是长任务。** 大 GGUF 可能要几分钟（上限 10 分钟），期间主进程被 `spawnSync` 占用属预期行为，
-   状态推送会短暂停顿，结束后恢复。
-6. **模型列表的可用性以 `getModels` 为准。** `ollamaRunning` 只表示"进程/API 大体在"。
-7. **渲染层初始状态获取**：`getStatus()` 拉一次 + `onStatus` 订阅即可，无需自己写轮询。
-
-## 4. 快速接入示例
-
-```js
-// 初始化
-const status = await window.botctl.getStatus();        // 拉一次
-const unsubscribe = window.botctl.onStatus((s) => {    // 订阅推送
-  renderStatus(s);
-});
-
-// 启动 / 停止
-const r1 = await window.botctl.startBot();   // { ok, pid } 或 { ok:false, error }
-const r2 = await window.botctl.stopBot();    // { ok } 或 { ok:false, error }
-
-// 选文件 + 导入
-const file = await window.botctl.pickGgufFile();       // 路径字符串 | null
-if (typeof file === 'string') {
-  const ir = await window.botctl.importModel({ name: 'my-model', path: file });
-  console.log(ir.ok, ir.log);
-}
-
-// 退出页面前
-unsubscribe();
-```
+`node --experimental-vm-modules scripts/test-ui-social-ipc.mjs` 使用模拟 Electron 验证来源限制、scope 数据权威、遗忘、技能停用/恢复、配置 sentinel 和打包资源 fallback，不启动真实应用或访问第三方服务。

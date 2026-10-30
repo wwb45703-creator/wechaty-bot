@@ -13,7 +13,11 @@
  * 用法：node scripts/test-room-trigger.mjs
  */
 
-import { checkRoomTrigger, cleanMention, isQuestionIntent } from '../src/handlers/room.js'
+import { runIsolatedScript } from './regression-suite.mjs'
+if (process.env.BOT_TEST_MODE !== '1' || !process.env.BOT_DATA_ROOT || !process.env.BOT_CONFIG_FILE) {
+  process.exit(runIsolatedScript('test-room-trigger.mjs'))
+}
+const { checkRoomTrigger, cleanMention, isQuestionIntent } = await import('../src/handlers/room.js')
 
 let pass = 0
 let fail = 0
@@ -22,17 +26,18 @@ const ok = (name, cond, detail = '') => {
   cond ? pass++ : fail++
 }
 
-function mockMsg({ text = '', self = false, talkerName = '群友张三', botName = '测试机器人' }) {
+function mockMsg({ text = '', self = false, talkerName = '群友张三', botName = '测试机器人', talkerId = 'member-1', botId = 'bot-1' }) {
   return {
     text: () => text,
     talker: () => ({
+      id: talkerId,
       name: () => talkerName,
       self: () => self,
     }),
     mentionSelf: async () => text.includes(`@${botName}`),
     wechaty: {
-      currentUser: { name: () => botName },
-      userSelf: () => ({ name: () => botName }),
+      currentUser: { id: botId, name: () => botName },
+      userSelf: () => ({ id: botId, name: () => botName }),
     },
   }
 }
@@ -94,7 +99,10 @@ ok('自身发言（self=true）绝对阻断', resSelf1.triggered === false)
 
 const msgSelf2 = mockMsg({ text: '小助手 在吗', talkerName: '测试机器人' })
 const resSelf2 = await checkRoomTrigger(msgSelf2, '小助手 在吗', { wakeWords: ['小助手'] })
-ok('自身发言（同名拦截）绝对阻断', resSelf2.triggered === false)
+ok('同昵称但不同稳定 ID 的群友不误拦截', resSelf2.triggered === true)
+const msgSelfId = mockMsg({ text: '大家吃晚饭了吗', talkerId: 'bot-1' })
+const resSelfId = await checkRoomTrigger(msgSelfId, '大家吃晚饭了吗', { mode: 'all' })
+ok('自身发言（同 ID）绝对阻断', resSelfId.triggered === false)
 
 console.log(`\n===== 结果：${pass} 通过 / ${fail} 失败 =====`)
 process.exit(fail > 0 ? 1 : 0)

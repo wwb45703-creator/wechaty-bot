@@ -13,11 +13,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { dataPath } from '../runtime-paths.js'
+import { getSocialState, socialPrompt } from '../social/index.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..', '..')
-const STATE_FILE = path.join(rootDir, 'state', 'persona-state.json')
-const EVOLUTION_LOG = path.join(rootDir, 'logs', 'persona-evolution.log')
+const STATE_FILE = dataPath('state', 'legacy', 'persona-state.json')
+const EVOLUTION_LOG = dataPath('logs', 'legacy-persona-evolution.log')
 
 const BASELINE = {
   name: '鹅王',
@@ -46,7 +48,8 @@ const dailyUserWeight = new Map()
 const MAX_USER_DAILY_WEIGHT = 5.0 // 单人单日最多贡献 5 点有效权重
 
 /** 读取当前人格状态（损坏或不存在时自愈重建） */
-export function getPersonaState() {
+export function getPersonaState(scope) {
+  if (scope) return getSocialState(scope).persona
   if (stateCache) return stateCache
 
   try {
@@ -276,7 +279,8 @@ export function applyHomeostasisDecay() {
 /**
  * 生成当前动态人格的 System Prompt 文本片段
  */
-export function formatPersonaPrompt() {
+export function formatPersonaPrompt(scope) {
+  if (scope) return socialPrompt(scope)
   const state = getPersonaState()
   const activeHobbies = (state.hobbies || [])
     .filter((h) => h.name !== '待定' && (h.status === 'active' || (h.confidence || 0) >= 0.15 || (h.count || 0) >= 1))

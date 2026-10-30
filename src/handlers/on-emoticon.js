@@ -1,89 +1,15 @@
-/**
- * 表情包消息处理（Emoticon）：
- * 当收到微信自定义表情包或大图表情 (type=5) 时，根据"鹅王"拟真人格进行趣味接梗互动。
- *
- * 特性：
- *  1. 严格冷却防刷屏：单人/单群 10 秒冷却；
- *  2. 接地气的人格互动：幽默调侃、斗图回击、偷图接梗；
- *  3. 连带促进关系演化与记忆互动。
- */
-
 import config from '../config-loader.js'
-import { logger } from '../logger.js'
-import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles, stripAtMentions } from '../utils.js'
-import { recordMemberInteraction } from '../personality/relationship.js'
-import { applyStimulus } from '../personality/emotion.js'
+import { processMessage } from '../messaging.js'
 
-const EMOTICON_BANTERS = [
-  '发这表情包是几个意思😂',
-  '这表情包有点魔性啊，先收了👍',
-  '这表情很传神啊，盯——',
-  '斗图是吧？我还没怕过谁🤡',
-  '偷图了偷图了，归我了哈哈',
-  '这小表情，有话直说嘛😄',
-  '甩个表情包就跑？说说最近有啥好玩的',
-  '6，这个表情包很有精神',
-]
-
-const lastBanterMap = new Map() // key -> 上次使用的表情梗（防连续复读同一条）
-
-/** 是否启用表情包互动 */
-export function isEmoticonEnabled() {
-  return config.emoticon?.enabled !== false
-}
-
-export async function handleEmoticonMessage(msg, room) {
+const lines = ['这个表情挺传神😂', '哈哈，这张图我看懂了', '6，这表情很有精神', '这小表情有点意思']
+const previous = new Map()
+export function isEmoticonEnabled() { return config.emoticon?.enabled !== false }
+export async function handleEmoticonMessage(msg, room, admission = null) {
   if (!isEmoticonEnabled()) return
-  try {
-    const talker = msg.talker()
-    const name = talker.name()
-    const isRoom = Boolean(room)
-    const topic = isRoom ? await room.topic().catch(() => '(未知群名)') : null
-
-    const key = isRoom ? `emoticon:room:${topic}` : `emoticon:private:${talker.id}`
-    const cooldown = config.emoticon?.cooldownSeconds ?? 10
-    const limit = checkRate(key, cooldown, 0)
-    if (!limit.allowed) {
-      logger.info(`表情包互动冷却中（${isRoom ? `群[${topic}]` : '私聊'} ${name}）`)
-      return
-    }
-    // 立即打上冷却标记，防并发消息连带穿透
-    recordReply(key, 0)
-
-    // 随机选择一条符合口吻的接梗（过滤掉上次用过的，绝不连续复读同一句）
-    const lastBanter = lastBanterMap.get(key)
-    const candidates = EMOTICON_BANTERS.filter((b) => b !== lastBanter)
-    const pool = candidates.length > 0 ? candidates : EMOTICON_BANTERS
-    const replyText = pool[Math.floor(Math.random() * pool.length)]
-    lastBanterMap.set(key, replyText)
-
-    // 更新即时情绪（受到表情包互动激发微量愉悦感与兴奋感）
-    applyStimulus({ pleasureDelta: 5, arousalDelta: 5 })
-
-    // 记录轻度关系互动
-    recordMemberInteraction(talker.id, {
-      sentiment: 'positive',
-      topic: '表情包互动',
-    })
-
-    const bubbles = splitBubbles(replyText)
-    if (isRoom) {
-      await sendBubbles(async (t, i) => {
-        const body = stripAtMentions(t)
-        const textToSend = i === 0 ? `@${name} ${body}` : body
-        logger.info(`[回复群表情] 群[${topic}] -> ${textToSend}`)
-        return room.say(textToSend, talker)
-      }, bubbles, config.ai?.replyDelaySeconds)
-    } else {
-      await sendBubbles((t) => {
-        logger.info(`[回复私聊表情] ${name} -> ${t}`)
-        return msg.say(t)
-      }, bubbles, config.ai?.replyDelaySeconds)
-    }
-
-    recordReply(key, 0)
-  } catch (err) {
-    logger.error(`表情包处理异常: ${err?.stack || err}`)
-  }
+  return processMessage({ msg, room, admission, kind: 'emoticon', producer: async (ctx) => {
+    const available = lines.filter((x) => x !== previous.get(ctx.key))
+    const text = available[Math.floor(Math.random() * available.length)]
+    previous.set(ctx.key, text)
+    return { text, userText: '发了一个表情包', extract: false }
+  } })
 }

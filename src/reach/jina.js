@@ -1,3 +1,4 @@
+import { externalFetch as fetch } from '../external-http.js'
 /**
  * Jina Reader 后端（https://r.jina.ai/<url>）：把目标页转成干净的 Markdown 文本。
  *
@@ -19,14 +20,19 @@ export async function fetchViaJina(urlStr, opts = {}) {
   if (config.reach?.jina?.enabled !== true) return null
   const timeoutMs = opts.timeoutMs || 25000
   // 目标 URL 过 SSRF 校验；r.jina.ai 本身是硬编码服务地址，不受聊天内容控制
-  const v = await validateExternalUrl(urlStr)
+  const v = await validateExternalUrl(urlStr, { signal: opts.signal })
   if (!v.ok) return null
 
   const ac = new AbortController()
+  const cancel = () => ac.abort()
+  if (opts.signal?.aborted) cancel()
+  opts.signal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => ac.abort(), timeoutMs)
   try {
     const res = await fetch(`https://r.jina.ai/${v.url.href}`, {
       signal: ac.signal,
+      timeoutMs,
+      deadline: opts.deadline,
       headers: { 'User-Agent': BROWSER_UA, Accept: 'text/plain' },
     })
     if (!res.ok) return null
@@ -38,5 +44,6 @@ export async function fetchViaJina(urlStr, opts = {}) {
     return null
   } finally {
     clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', cancel)
   }
 }

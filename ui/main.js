@@ -16,11 +16,57 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { pathToFileURL } = require('node:url');
+const { ALLOWED_CHANNELS, trustedSender } = require('./ipc-policy.js');
 
 // ==================== 路径常量 ====================
-const PROJECT_ROOT = 'D:\\wechaty-bot';                              // 项目根（bot 的 cwd）
-const FLAG_FILE = 'D:\\wechaty-bot\\state\\bot-disabled.flag';       // 停用标记：存在 = 禁止 bot 运行
-const CONFIG_FILE = 'D:\\wechaty-bot\\config.json';                  // bot 配置（含 ai.model）
+const PROJECT_ROOT = path.resolve(process.env.BOT_PROJECT_ROOT || 'D:\\wechaty-bot');
+const ISOLATED_SMOKE = process.env.BOT_UI_SMOKE === '1' || process.argv.includes('--isolated-smoke');
+const DATA_ROOT = ISOLATED_SMOKE
+  ? fs.mkdtempSync(path.join(os.tmpdir(), 'wechaty-ui-smoke-'))
+  : path.resolve(process.env.BOT_DATA_ROOT || PROJECT_ROOT);
+process.env.BOT_DATA_ROOT = DATA_ROOT;
+const FLAG_FILE = path.join(DATA_ROOT, 'state', 'bot-disabled.flag');
+const CONFIG_FILE = ISOLATED_SMOKE ? path.join(DATA_ROOT, 'config.json')
+  : path.resolve(process.env.BOT_CONFIG_FILE || path.join(DATA_ROOT, 'config.json'));
+process.env.BOT_CONFIG_FILE = CONFIG_FILE;
+const BOT_LOG = path.join(DATA_ROOT, 'logs', 'bot-console.log');
+if (ISOLATED_SMOKE) {
+  process.env.BOT_TEST_MODE = '1';
+  process.env.BOT_CONFIG_FILE = CONFIG_FILE;
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ ai: {}, astrbot: { enabled: false }, personas: { smoke: '隔离测试角色' } }));
+  app.setPath('userData', path.join(DATA_ROOT, 'ui-user-data'));
+}
+const RENDERER_FILE = path.join(__dirname, 'renderer', 'index.html');
+const SCOPED_SOCIAL_CHANNELS = new Set(['getPersonaState', 'getEmotionState', 'getPersonaHistory',
+  'listRelationships', 'getRelationship', 'deleteRelationship', 'listMemories', 'getMemoryDetail', 'deleteMemory']);
+async function importProjectModule(relative) {
+  const externalRoot = path.join(PROJECT_ROOT, 'src');
+  const bundledRoot = path.join(process.resourcesPath || __dirname, 'bot-runtime', 'src');
+  const sourceRoot = path.resolve(__dirname, '..', 'src');
+  // A smoke run loads its own source/bundle, never a legacy production module
+  // which may ignore the injected data root and read the user's real config.
+  const complete = (root) => ['social/index.js', 'skills/review-store.js', 'runtime-paths.js'].every((name) => fs.existsSync(path.join(root, name)));
+  const chosenRoot = ISOLATED_SMOKE ? (complete(bundledRoot) ? bundledRoot : sourceRoot)
+    : (complete(externalRoot) ? externalRoot : bundledRoot);
+  const target = path.join(chosenRoot, relative);
+  return import(pathToFileURL(target).href);
+}
+function registerIpc(channel, handler) {
+  if (!ALLOWED_CHANNELS.has(channel)) throw new Error('IPC 通道不在白名单: ' + channel);
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!trustedSender(event, BrowserWindow.getAllWindows(), RENDERER_FILE)) return { ok: false, error: '拒绝不可信窗口请求' };
+    if (ISOLATED_SMOKE && !channel.startsWith('skills:') && !channel.startsWith('social:') && !SCOPED_SOCIAL_CHANNELS.has(channel)) {
+      if (channel === 'getStatus') return { flag: true, botRunning: false, botPid: null, ollamaRunning: false, currentModel: '隔离验收', isolated: true };
+      if (channel === 'getModels') return { ok: true, models: [] };
+      if (channel === 'getLogs') return { ok: true, lines: ['隔离验收：进程控制、联网和自启已禁用'] };
+      if (channel === 'getAutostart') return { ok: true, enabled: false };
+      return { ok: false, error: '隔离验收模式不访问真实进程、网络或自启配置' };
+    }
+    try { return await handler(event, ...args); } catch (err) { return { ok: false, error: errMessage(err) }; }
+  });
+}
 const OLLAMA_EXE = 'D:\\Ollama\\ollama.exe';                         // Ollama 可执行文件
 const OLLAMA_API = 'http://127.0.0.1:11434';                         // Ollama API 地址
 
@@ -48,7 +94,7 @@ async function fetchWithTimeout(url, timeoutMs) {
  * 查找 bot 进程 PID —— 纯零子进程方案：读 bot 写的 state/bot.pid 探活。
  * （不再回退 PowerShell——任何控制台程序 spawn 在 Win11 默认终端下都会闪窗）
  */
-const BOT_PID_FILE = 'D:\\wechaty-bot\\state\\bot.pid';
+const BOT_PID_FILE = path.join(DATA_ROOT, 'state', 'bot.pid');
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
@@ -91,6 +137,7 @@ let pollBusy = false; // 防止上一轮还没跑完就叠加下一轮
  * }
  */
 async function computeStatus() {
+  if (ISOLATED_SMOKE) return { flag: true, botRunning: false, botPid: null, ollamaRunning: false, currentModel: '隔离验收', isolated: true };
   const flag = fs.existsSync(FLAG_FILE);
   const botPid = await findBotPidAsync(); // pid 文件探活，零子进程
 
@@ -154,7 +201,7 @@ async function doStartBot() {
   }
 
   // 步骤 3：零闪窗启动（wscript 静默跑一轮 supervisor 体检：拉起 bot + ollama）
-  spawn('wscript.exe', ['D:\\wechaty-bot\\scripts\\watchdog-launcher.vbs'], {
+  spawn('wscript.exe', [path.join(PROJECT_ROOT, 'scripts', 'watchdog-launcher.vbs')], {
     windowsHide: true,
     creationFlags: CREATE_NO_WINDOW,
     detached: true,
@@ -197,7 +244,7 @@ async function doStopBot() {
 // 例外：pickGgufFile 正常返回"路径字符串或 null"（文件选择对话框取消 = null）。
 
 // 获取一次当前状态（渲染层初始化时可主动拉一次，之后靠 'status' 推送）
-ipcMain.handle('getStatus', async () => {
+registerIpc('getStatus', async () => {
   try {
     return await computeStatus();
   } catch (err) {
@@ -206,7 +253,7 @@ ipcMain.handle('getStatus', async () => {
 });
 
 // 启动 bot
-ipcMain.handle('startBot', async () => {
+registerIpc('startBot', async () => {
   try {
     return await doStartBot();
   } catch (err) {
@@ -215,7 +262,7 @@ ipcMain.handle('startBot', async () => {
 });
 
 // 停止 bot（写停用标记 + 精确杀进程）
-ipcMain.handle('stopBot', async () => {
+registerIpc('stopBot', async () => {
   try {
     return await doStopBot();
   } catch (err) {
@@ -224,7 +271,7 @@ ipcMain.handle('stopBot', async () => {
 });
 
 // 列出 Ollama 已装模型 → {ok:true, models:[{name,size}]}；失败 {ok:false, error:'Ollama 未运行'}
-ipcMain.handle('getModels', async () => {
+registerIpc('getModels', async () => {
   try {
     const res = await fetchWithTimeout(OLLAMA_API + '/api/tags', 3000);
     if (!res.ok) return { ok: false, error: 'Ollama 未运行' };
@@ -247,7 +294,7 @@ ipcMain.handle('getModels', async () => {
  *  3. 若 bot 正在运行：先 stop 再 start（让新模型立即生效）；没运行则只改配置
  * 返回 {ok:true, restarted:是否重启了bot}
  */
-ipcMain.handle('setCurrentModel', async (_event, name) => {
+registerIpc('setCurrentModel', async (_event, name) => {
   try {
     if (typeof name !== 'string' || !name.trim()) {
       return { ok: false, error: '模型名不能为空' };
@@ -277,7 +324,7 @@ ipcMain.handle('setCurrentModel', async (_event, name) => {
 });
 
 // 列出已驻留内存的模型（GET /api/ps）→ {ok:true, loaded:[{name, sizeVram, expires}]}
-ipcMain.handle('getLoadedModels', async () => {
+registerIpc('getLoadedModels', async () => {
   try {
     const res = await fetchWithTimeout(OLLAMA_API + '/api/ps', 3000);
     if (!res.ok) return { ok: false, error: 'Ollama 未运行' };
@@ -294,7 +341,7 @@ ipcMain.handle('getLoadedModels', async () => {
 });
 
 // 预加载模型到内存/显存（空 generate + keep_alive），免首次对话的加载等待
-ipcMain.handle('loadModel', async (_event, name) => {
+registerIpc('loadModel', async (_event, name) => {
   try {
     if (typeof name !== 'string' || !name.trim()) return { ok: false, error: '模型名不能为空' };
     const ac = new AbortController();
@@ -315,7 +362,7 @@ ipcMain.handle('loadModel', async (_event, name) => {
 });
 
 // 从内存卸载模型（keep_alive: 0 立即释放显存）
-ipcMain.handle('unloadModel', async (_event, name) => {
+registerIpc('unloadModel', async (_event, name) => {
   try {
     if (typeof name !== 'string' || !name.trim()) return { ok: false, error: '模型名不能为空' };
     const res = await fetch(OLLAMA_API + '/api/generate', {
@@ -339,7 +386,7 @@ ipcMain.handle('unloadModel', async (_event, name) => {
  *  4. POST /api/create（files.gguf = sha256:<digest>）完成导入
  * 返回 {ok:bool, log}
  */
-ipcMain.handle('importModel', async (_event, payload) => {
+registerIpc('importModel', async (_event, payload) => {
   try {
     const args = payload || {};
     const name = typeof args.name === 'string' ? args.name.trim() : '';
@@ -449,7 +496,7 @@ function currentLogFile() {
  * 大日志只读文件末尾 128KB，避免读爆内存。
  * 返回 {ok:true, lines:['...']}；日志文件不存在时返回空数组。
  */
-ipcMain.handle('getLogs', async (_event, lines) => {
+registerIpc('getLogs', async (_event, lines) => {
   try {
     let n = Math.floor(Number(lines) || 30);
     n = Math.max(1, Math.min(1000, n));
@@ -485,10 +532,10 @@ ipcMain.handle('getLogs', async (_event, lines) => {
  * 启动 Ollama 服务：进程不存在时以 detached 方式拉起 ollama serve。
  * 已在运行则直接返回成功（幂等）。
  */
-ipcMain.handle('startOllama', async () => {
+registerIpc('startOllama', async () => {
   try {
     // 清除独立停用标记（看门狗恢复对 Ollama 的守护）
-    const ollamaFlag = 'D:\\wechaty-bot\\state\\ollama-disabled.flag';
+    const ollamaFlag = path.join(DATA_ROOT, 'state', 'ollama-disabled.flag');
     if (fs.existsSync(ollamaFlag)) fs.unlinkSync(ollamaFlag);
 
     // 若 Ollama API 已可用则幂等返回
@@ -499,7 +546,7 @@ ipcMain.handle('startOllama', async () => {
 
     // 零闪窗启动：交给 VBS（wscript 是 GUI 子系统，无控制台窗口）静默执行
     // VBS 内容 = 隐藏运行 ollama serve
-    const launcher = 'D:\\wechaty-bot\\scripts\\start-ollama.vbs';
+    const launcher = path.join(PROJECT_ROOT, 'scripts', 'start-ollama.vbs');
     spawn('wscript.exe', [launcher], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
 
     // 等 Ollama 端口就绪（最多 15 秒），让 UI 状态及时刷新
@@ -518,46 +565,23 @@ ipcMain.handle('startOllama', async () => {
 
 // ==================== 扩展功能：测试对话 / 自启开关 / 记忆管理 ====================
 
-function stripThinkMain(text) {
-  return String(text || '')
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<\|(?:im_end|im_start|endoftext|eot_id|channel\|)[^>]*\|>/gi, '')
-    .replace(/\n?\s*(?:user|assistant|system)\s*\n[\s\S]*$/i, '')
-    .trim();
-}
-
-// 测试对话：读 config 组装当前人设，直接调 Ollama（不进微信）
-ipcMain.handle('testChat', async (_event, text) => {
-  try {
-    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    const pname = config.defaultPersona || '鹅王';
-    const roleCard = config.personas?.[pname] || config.persona || '';
-    const base = config.personaBase || '';
-    const sys = (roleCard + (base ? '\n\n' + base : '')).slice(0, 4000)
-      + '\n\n当前是与控制台的测试对话（不在微信里），直接按人设回复一两句话。';
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), (config.ai?.timeoutSeconds || 180) * 1000);
-    const res = await fetch(OLLAMA_API + '/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: config.ai.model,
-        messages: [{ role: 'system', content: sys }, { role: 'user', content: String(text || '').slice(0, 2000) }],
-        stream: false,
-        think: false,
-        options: { temperature: config.ai?.temperature ?? 0.8 },
-      }),
-      signal: ac.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) return { ok: false, error: 'Ollama HTTP ' + res.status };
-    const data = await res.json();
-    const reply = stripThinkMain(data?.message?.content);
-    if (!reply) return { ok: false, error: '模型返回空回复' };
-    return { ok: true, reply };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+// Model diagnostics share the production role/context builder and chat queue.
+// A diagnostic is one-shot: no delivery, growth, history or learning proposals.
+registerIpc('testChat', async (_event, request) => {
+  const text = typeof request === 'string' ? request : request?.text;
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: '请输入测试消息' };
+  const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  const scope = typeof request === 'object' && request?.scope ? checkedScope(request.scope) : undefined;
+  const personaName = scope?.personaId || config.defaultPersona || '鹅王';
+  const ai = await importProjectModule('ai.js');
+  ai.initAi(config);
+  const epoch = scope ? (await getSocialService()).captureEpoch(scope) : undefined;
+  const reply = await ai.generateOnce(text.trim().slice(0, 2000), {
+    key: 'console-once:' + JSON.stringify(scope || ['default-role']),
+    scope, epoch, personaName, diagnostic: true,
+    systemExtra: '当前是控制台本地模型诊断，只回应当前输入；不发送微信消息，也不把诊断当作共同经历。',
+  });
+  return reply ? { ok: true, reply } : { ok: false, error: '本地模型未返回有效回复，请检查 Ollama 状态与本地模型配置' };
 });
 
 // ==================== 开机自启（Startup 目录 vbs，纯文件操作零闪窗） ====================
@@ -566,13 +590,13 @@ const STARTUP_DIR = path.join(process.env.APPDATA || '', 'Microsoft\\Windows\\St
 const AUTOSTART_VBS = path.join(STARTUP_DIR, 'wechaty-bot-autostart.vbs');
 const AUTOSTART_VBS_CONTENT =
   "' Wechaty bot autostart: hidden watchdog round (starts bot + ollama)\r\n" +
-  'CreateObject("WScript.Shell").Run "wscript.exe ""D:\\wechaty-bot\\scripts\\watchdog-launcher.vbs""", 0, False';
+  'CreateObject("WScript.Shell").Run "wscript.exe ""' + path.join(PROJECT_ROOT, 'scripts', 'watchdog-launcher.vbs') + '""", 0, False';
 
-ipcMain.handle('getAutostart', async () => {
+registerIpc('getAutostart', async () => {
   return { ok: true, enabled: fs.existsSync(AUTOSTART_VBS) };
 });
 
-ipcMain.handle('setAutostart', async (_event, enable) => {
+registerIpc('setAutostart', async (_event, enable) => {
   try {
     if (enable) {
       fs.mkdirSync(STARTUP_DIR, { recursive: true });
@@ -586,208 +610,56 @@ ipcMain.handle('setAutostart', async (_event, enable) => {
   }
 });
 
-// 长期记忆列表（memories 目录递归，只读 JSON 元信息）
-ipcMain.handle('listMemories', async () => {
-  try {
-    const root = path.resolve('D:\\wechaty-bot\\memories');
-    const list = [];
-    const walk = (dir, rel) => {
-      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, f.name);
-        const r = rel ? rel + '/' + f.name : f.name;
-        if (f.isDirectory()) walk(full, r);
-        else if (f.name.endsWith('.json')) {
-          try {
-            const j = JSON.parse(fs.readFileSync(full, 'utf8'));
-            list.push({ rel: r, facts: (j.facts || []).length, updatedAt: j.updatedAt || '' });
-          } catch (err) { list.push({ rel: r, facts: -1, updatedAt: '' }); }
-        }
-      }
-    };
-    if (fs.existsSync(root)) walk(root, '');
-    return { ok: true, list };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+// Legacy views require an explicit social scope. Never read or unlink obsolete
+// per-user JSON files: the event journal is the only live authority.
+function scopeSelectionRequired() {
+  return { ok: false, scopeRequired: true, error: '请从“社交成长”页选择账号、会话、角色和用户范围' };
+}
+async function selectedSocialState(scope) {
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return null;
+  return (await getSocialService()).getSocialState(checkedScope(scope));
+}
+registerIpc('listMemories', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  if (!state) return scopeSelectionRequired();
+  return { ok: true, list: [{ scope: state.scope, facts: state.memory.facts.length,
+    episodes: state.memory.episodes.length, semantics: state.memory.semantics.length }] };
 });
-
-// 删除一条记忆档案：双保险（rel 先过白名单正则，再 resolve 严格边界校验）
-ipcMain.handle('deleteMemory', async (_event, rel) => {
-  try {
-    const relStr = String(rel || '');
-    if (!/^[\w][\w\-./]{0,120}\.json$/i.test(relStr) || relStr.includes('..')) {
-      return { ok: false, error: '非法路径' };
-    }
-    const root = path.resolve('D:\\wechaty-bot\\memories');
-    const target = path.resolve(root, relStr);
-    if (target !== root && target.startsWith(root + path.sep) && fs.existsSync(target)) {
-      fs.unlinkSync(target);
-      return { ok: true };
-    }
-    return { ok: false, error: '非法路径' };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+registerIpc('getMemoryDetail', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  return state ? { ok: true, scope: state.scope, data: state.memory } : scopeSelectionRequired();
 });
-
-// 获取记忆档案详情
-ipcMain.handle('getMemoryDetail', async (_event, rel) => {
-  try {
-    const relStr = String(rel || '');
-    if (!/^[\w][\w\-./]{0,120}\.json$/i.test(relStr) || relStr.includes('..')) {
-      return { ok: false, error: '非法路径' };
-    }
-    const root = path.resolve('D:\\wechaty-bot\\memories');
-    const target = path.resolve(root, relStr);
-    if (target !== root && target.startsWith(root + path.sep) && fs.existsSync(target)) {
-      const content = JSON.parse(fs.readFileSync(target, 'utf8'));
-      return { ok: true, data: content };
-    }
-    return { ok: false, error: '记忆档案不存在' };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+registerIpc('getPersonaState', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  return state ? { ok: true, scope: state.scope, persona: state.persona } : scopeSelectionRequired();
 });
-
-// ==================== 人格演化 / 情绪 / 关系网络 IPC ====================
-
-// 读取当前人格状态 (state/persona-state.json)
-ipcMain.handle('getPersonaState', async () => {
-  try {
-    const file = path.join(PROJECT_ROOT, 'state', 'persona-state.json');
-    if (!fs.existsSync(file)) {
-      return { ok: false, error: '人格状态文件不存在' };
-    }
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { ok: true, persona: data };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+registerIpc('getEmotionState', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  return state ? { ok: true, scope: state.scope, emotion: state.emotion } : scopeSelectionRequired();
 });
-
-// 读取当前短期情绪 (state/emotion-state.json)
-ipcMain.handle('getEmotionState', async () => {
-  try {
-    const file = path.join(PROJECT_ROOT, 'state', 'emotion-state.json');
-    if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return { ok: true, emotion: data };
-    }
-    return {
-      ok: true,
-      emotion: {
-        pleasure: 0,
-        arousal: 50,
-        tension: 20,
-        fatigue: 0,
-        updatedAt: new Date().toISOString(),
-      },
-    };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+registerIpc('getPersonaHistory', async () => scopeSelectionRequired());
+registerIpc('listRelationships', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  return state ? { ok: true, list: [{ scope: state.scope, displayName: state.displayName,
+    userId: state.scope.subjectId, ...state.relationship }] } : scopeSelectionRequired();
 });
-
-// 读取演化审计日志 (logs/persona-evolution.log 尾部 limit 条)
-ipcMain.handle('getPersonaHistory', async (_event, limit = 30) => {
-  try {
-    const file = path.join(PROJECT_ROOT, 'logs', 'persona-evolution.log');
-    if (!fs.existsSync(file)) {
-      return { ok: true, history: [] };
-    }
-    const content = fs.readFileSync(file, 'utf8');
-    const lines = content.trim().split(/\r?\n/).filter(Boolean);
-    const slice = lines.slice(-Math.min(Math.max(1, limit), 200));
-    const history = slice.map((line) => {
-      const match = line.match(/^\[(.*?)\]\s+\[EVOLUTION\]\s+(.*)$/);
-      if (!match) return { raw: line, timestamp: '' };
-      const timestamp = match[1];
-      const rest = match[2];
-
-      const eventMatch = rest.match(/事件=(\S+)/);
-      const reasonMatch = rest.match(/原因=([^\[]+)/);
-      const changeMatch = rest.match(/\[(.*?)\]/);
-      const roomMatch = rest.match(/room=(\S+)/);
-      const userMatch = rest.match(/user=(\S+)/);
-
-      return {
-        timestamp,
-        event: eventMatch ? eventMatch[1] : '',
-        reason: reasonMatch ? reasonMatch[1].trim() : '',
-        change: changeMatch ? changeMatch[1] : '',
-        room: roomMatch ? roomMatch[1] : '',
-        user: userMatch ? userMatch[1] : '',
-        raw: line,
-      };
-    }).reverse();
-    return { ok: true, history };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
+registerIpc('getRelationship', async (_event, scope) => {
+  const state = await selectedSocialState(scope);
+  return state ? { ok: true, scope: state.scope, data: { userId: state.scope.subjectId,
+    displayName: state.displayName, ...state.relationship, sharedExperiences: state.memory.episodes } } : scopeSelectionRequired();
 });
-
-// 列出所有成员关系画像 (state/relationships/)
-ipcMain.handle('listRelationships', async (_event, scene) => {
-  try {
-    const dir = path.join(PROJECT_ROOT, 'state', 'relationships');
-    if (!fs.existsSync(dir)) return { ok: true, list: [] };
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-    const list = [];
-    for (const f of files) {
-      try {
-        const full = path.join(dir, f);
-        const data = JSON.parse(fs.readFileSync(full, 'utf8'));
-        if (data && data.userId) {
-          list.push(data);
-        }
-      } catch {}
-    }
-    list.sort((a, b) => (b.familiarity || 0) - (a.familiarity || 0));
-    return { ok: true, list };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
-});
-
-// 获取单个成员关系详情
-ipcMain.handle('getRelationship', async (_event, userId) => {
-  try {
-    const uid = String(userId || '').trim();
-    if (!/^[\w@.-]{1,64}$/.test(uid)) return { ok: false, error: '非法用户标识' };
-    const file = path.join(PROJECT_ROOT, 'state', 'relationships', `${uid}.json`);
-    if (!fs.existsSync(file)) return { ok: false, error: '关系档案不存在' };
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { ok: true, data };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
-});
-
-// 删除单个成员关系档案
-ipcMain.handle('deleteRelationship', async (_event, userId) => {
-  try {
-    const uid = String(userId || '').trim();
-    if (!/^[\w@.-]{1,64}$/.test(uid)) return { ok: false, error: '非法用户标识' };
-    const file = path.join(PROJECT_ROOT, 'state', 'relationships', `${uid}.json`);
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file);
-      return { ok: true };
-    }
-    return { ok: false, error: '文件不存在' };
-  } catch (err) {
-    return { ok: false, error: errMessage(err) };
-  }
-});
+registerIpc('deleteMemory', async (_event, request) => forgetSocialRequest(request));
+registerIpc('deleteRelationship', async (_event, request) => forgetSocialRequest(request));
 
 // 完全关闭 Ollama：写独立停用标记（看门狗不再拉起）→ taskkill 全部 ollama 进程。
 // 注意：关闭后机器人将无法生成回复（视觉/文本都依赖 Ollama）。
-ipcMain.handle('stopOllama', async () => {
+registerIpc('stopOllama', async () => {
   try {
-    const ollamaFlag = 'D:\\wechaty-bot\\state\\ollama-disabled.flag';
+    const ollamaFlag = path.join(DATA_ROOT, 'state', 'ollama-disabled.flag');
     fs.mkdirSync(path.dirname(ollamaFlag), { recursive: true });
     fs.writeFileSync(ollamaFlag, '');
     // taskkill 由 VBS（GUI 子系统，无控制台窗口）静默执行——根治闪窗
-    const child = spawn('wscript.exe', ['D:\\wechaty-bot\\scripts\\stop-ollama.vbs'], {
+    const child = spawn('wscript.exe', [path.join(PROJECT_ROOT, 'scripts', 'stop-ollama.vbs')], {
       windowsHide: true,
       creationFlags: CREATE_NO_WINDOW,
     });
@@ -805,7 +677,7 @@ ipcMain.handle('stopOllama', async () => {
  * 返回：选中的绝对路径字符串；取消/出错返回 null。
  * （注意：此通道正常返回值是"路径或 null"，不遵循 {ok} 包装约定）
  */
-ipcMain.handle('pickGgufFile', async () => {
+registerIpc('pickGgufFile', async () => {
   try {
     const result = await dialog.showOpenDialog({
       title: '选择 GGUF 模型文件',
@@ -824,12 +696,12 @@ ipcMain.handle('pickGgufFile', async () => {
 let _astrbotModule = null;
 async function getAstrBot() {
   if (!_astrbotModule) {
-    _astrbotModule = await import('../src/reach/astrbot-client.js');
+    _astrbotModule = await importProjectModule('reach/astrbot-client.js');
   }
   return _astrbotModule;
 }
 
-ipcMain.handle('astrbot:status', async () => {
+registerIpc('astrbot:status', async () => {
   try {
     const mod = await getAstrBot();
     const data = await mod.getAstrBotStatus();
@@ -839,7 +711,7 @@ ipcMain.handle('astrbot:status', async () => {
   }
 });
 
-ipcMain.handle('astrbot:plugins:list', async () => {
+registerIpc('astrbot:plugins:list', async () => {
   try {
     const mod = await getAstrBot();
     const list = await mod.listInstalledPlugins();
@@ -849,7 +721,7 @@ ipcMain.handle('astrbot:plugins:list', async () => {
   }
 });
 
-ipcMain.handle('astrbot:plugins:market', async (_event, keyword) => {
+registerIpc('astrbot:plugins:market', async (_event, keyword) => {
   try {
     const mod = await getAstrBot();
     const list = await mod.searchMarketPlugins(String(keyword || ''), 60);
@@ -859,7 +731,7 @@ ipcMain.handle('astrbot:plugins:market', async (_event, keyword) => {
   }
 });
 
-ipcMain.handle('astrbot:plugins:toggle', async (_event, payload) => {
+registerIpc('astrbot:plugins:toggle', async (_event, payload) => {
   try {
     const mod = await getAstrBot();
     const res = await mod.togglePlugin(payload || {});
@@ -869,7 +741,7 @@ ipcMain.handle('astrbot:plugins:toggle', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('astrbot:plugins:install', async (_event, repoUrl) => {
+registerIpc('astrbot:plugins:install', async (_event, repoUrl) => {
   try {
     const mod = await getAstrBot();
     const res = await mod.installPlugin(String(repoUrl || ''));
@@ -879,7 +751,7 @@ ipcMain.handle('astrbot:plugins:install', async (_event, repoUrl) => {
   }
 });
 
-ipcMain.handle('astrbot:kb:list', async () => {
+registerIpc('astrbot:kb:list', async () => {
   try {
     const mod = await getAstrBot();
     const res = await mod.listKnowledgeBases();
@@ -894,7 +766,7 @@ ipcMain.handle('astrbot:kb:list', async () => {
   }
 });
 
-ipcMain.handle('astrbot:kb:query', async (_event, payload) => {
+registerIpc('astrbot:kb:query', async (_event, payload) => {
   try {
     const mod = await getAstrBot();
     const res = await mod.queryKnowledgeBase(payload || {});
@@ -904,7 +776,7 @@ ipcMain.handle('astrbot:kb:query', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('astrbot:service:toggle', async (_event, action) => {
+registerIpc('astrbot:service:toggle', async (_event, action) => {
   try {
     const mod = await getAstrBot();
     if (action === 'start') {
@@ -929,8 +801,45 @@ ipcMain.handle('astrbot:service:toggle', async (_event, action) => {
 
 // ==================== 窗口与生命周期 ====================
 
+let skillsService, tracesService, socialService;
+async function getSkillsService() { return skillsService ||= await importProjectModule('skills/review-store.js'); }
+async function getTracesService() { return tracesService ||= await importProjectModule('skills/tracer.js'); }
+async function getSocialService() { return socialService ||= await importProjectModule('social/index.js'); }
+function checkedScope(scope) {
+  const keys = ['platform', 'accountId', 'conversationId', 'personaId', 'subjectId'];
+  if (!scope || typeof scope !== 'object' || keys.some((k) => typeof scope[k] !== 'string' || !scope[k] || scope[k].length > 256)) throw new Error('请选择完整的账号、会话、角色和用户范围');
+  if (scope.platform !== 'wechat') throw new Error('此版本仅支持微信范围');
+  return Object.fromEntries(keys.map((k) => [k, scope[k]]));
+}
+registerIpc('skills:list', async () => ({ ok: true, ...(await getSkillsService()).listSkillReviews(), traces: (await getTracesService()).listInteractionTraces() }));
+registerIpc('skills:detail', async (_event, id) => ({ ok: true, data: (await getSkillsService()).getSkillReview(id) }));
+registerIpc('skills:propose', async (_event, request) => {
+  if (!request || !['bundled-example', 'trace-template'].includes(request.kind)) throw new Error('不支持的候选来源');
+  const candidate = request.kind === 'bundled-example'
+    ? (await getSkillsService()).proposeBundledExample(request.id)
+    : (await getTracesService()).generateCandidateFromTrace(request.id);
+  return { ok: true, data: candidate };
+});
+registerIpc('skills:evaluate', async (_event, id) => ({ ok: true, data: await (await getSkillsService()).evaluateCandidate(id) }));
+registerIpc('skills:activate', async (_event, request) => (await getSkillsService()).activateCandidate(request?.id, { expectedHash: request?.hash, reviewed: request?.confirmed === true }));
+registerIpc('skills:reject', async (_event, id) => (await getSkillsService()).rejectCandidate(id));
+registerIpc('skills:rollback', async (_event, request) => (await getSkillsService()).rollbackSkill(request?.skillId, request?.hash, { reviewed: request?.confirmed === true }));
+registerIpc('skills:deactivate', async (_event, request) => (await getSkillsService()).deactivateSkill(request?.skillId, { reviewed: request?.confirmed === true }));
+registerIpc('social:list', async () => ({ ok: true, list: (await getSocialService()).listSocialState() }));
+registerIpc('social:detail', async (_event, scope) => ({ ok: true, data: (await getSocialService()).getSocialState(checkedScope(scope)) }));
+async function forgetSocialRequest(request) {
+  if (request?.confirmed !== true || typeof request?.allConversations !== 'boolean') throw new Error('须确认遗忘范围');
+  const scope = checkedScope(request.scope);
+  const options = { allConversations: request.allConversations };
+  const result = await (await getSocialService()).forgetSubject(scope, options);
+  const traces = (await getTracesService()).purgeSubjectTraces(scope, options);
+  return { ok: true, data: result, traces };
+}
+registerIpc('social:forget', async (_event, request) => forgetSocialRequest(request));
+
 function createWindow() {
   const win = new BrowserWindow({
+    show: !ISOLATED_SMOKE,
     width: 1280,
     height: 800,
     minWidth: 1080,
@@ -939,15 +848,54 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,  // 渲染层与主进程隔离，只暴露 window.botctl
       nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: !ISOLATED_SMOKE,
+      offscreen: ISOLATED_SMOKE,
     },
   });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== pathToFileURL(RENDERER_FILE).href) event.preventDefault();
+  });
+  win.loadFile(RENDERER_FILE);
+  return win;
 }
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null); // 去掉默认菜单栏，控制台界面更干净
-  createWindow();
+  const win = createWindow();
   startStatusPolling();
+  if (ISOLATED_SMOKE && (process.env.BOT_UI_SMOKE_REPORT || process.env.BOT_UI_SMOKE_SCREENSHOT)) {
+    win.webContents.once('did-finish-load', async () => {
+      const report = { isolated: true, dataRoot: DATA_ROOT, failures: [] };
+      try {
+        report.status = await win.webContents.executeJavaScript('window.botctl.getStatus()');
+        report.skills = await win.webContents.executeJavaScript('window.botctl.listSkillReviews()');
+        report.social = await win.webContents.executeJavaScript('window.botctl.listSocialScopes()');
+        report.controlsBlocked = await win.webContents.executeJavaScript('window.botctl.startBot()');
+        report.pages = await win.webContents.executeJavaScript("[...document.querySelectorAll('.page')].map(e=>e.id)");
+        if (!report.skills.ok || !report.social.ok || report.controlsBlocked.ok !== false) report.failures.push('服务加载或隔离防线失败');
+        if (process.env.BOT_UI_SMOKE_SCREENSHOT) {
+          const page = ['home', 'skill-review', 'social-growth'].includes(process.env.BOT_UI_SMOKE_PAGE) ? process.env.BOT_UI_SMOKE_PAGE : 'social-growth';
+          const refresh = page === 'skill-review' ? 'refreshSkillReviews()' : page === 'social-growth' ? 'refreshSocialScopes()' : 'Promise.resolve()';
+          await win.webContents.executeJavaScript('switchPage(' + JSON.stringify(page) + '); ' + refresh);
+          report.activePage = await win.webContents.executeJavaScript("document.querySelector('.page.active')?.id");
+          if (report.activePage !== 'page-' + page) throw new Error('隔离验收页面未切换成功');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const screenshot = path.resolve(process.env.BOT_UI_SMOKE_SCREENSHOT);
+          fs.mkdirSync(path.dirname(screenshot), { recursive: true });
+          fs.writeFileSync(screenshot, (await win.webContents.capturePage()).toPNG());
+          report.screenshot = { page, path: screenshot };
+        }
+      } catch (err) { report.failures.push(errMessage(err)); }
+      if (process.env.BOT_UI_SMOKE_REPORT) {
+        const reportFile = path.resolve(process.env.BOT_UI_SMOKE_REPORT);
+        fs.mkdirSync(path.dirname(reportFile), { recursive: true });
+        fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+      }
+      app.exit(report.failures.length ? 1 : 0);
+    });
+  }
 
   app.on('activate', () => {
     // macOS 点 dock 图标时若无窗口则重建（Windows 下一般不会触发）

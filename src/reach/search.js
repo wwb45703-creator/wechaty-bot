@@ -1,3 +1,4 @@
+import { externalFetch as fetch } from '../external-http.js'
 /**
  * 搜索后端：必应(cn.bing.com) 结果页抓取（零 key、零外部依赖、国内直连可达）。
  *
@@ -67,14 +68,19 @@ function unwrapBingUrl(href) {
  * @returns {Promise<Array<{title,url,snippet}>|null>} 无结果/网络失败返回 null
  */
 export async function bingSearch(query, opts = {}) {
-  const num = opts.numResults || 6
+  const num = Math.min(10, Math.max(1, Number(opts.numResults ?? opts.maxResults ?? 6) || 6))
   const timeoutMs = opts.timeoutMs || 15000
   const ac = new AbortController()
+  const cancel = () => ac.abort()
+  if (opts.signal?.aborted) cancel()
+  opts.signal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => ac.abort(), timeoutMs)
   try {
     const url = `https://cn.bing.com/search?q=${encodeURIComponent(query)}&count=10&setlang=zh-CN`
-    const res = await fetch(url, {
+    const res = await (opts.client || fetch)(url, {
       signal: ac.signal,
+      deadline: opts.deadline,
+      timeoutMs,
       headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'zh-CN,zh;q=0.9' },
     })
     if (!res.ok) {
@@ -101,6 +107,7 @@ export async function bingSearch(query, opts = {}) {
     return null
   } finally {
     clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', cancel)
   }
 }
 
@@ -113,9 +120,9 @@ export async function webSearch(query, opts = {}) {
   if (!safeQuery) return null
   const results = await bingSearch(safeQuery, opts)
   if (results && results.length) {
-    logger.info(`[reach] 搜索命中(bing): "${safeQuery.slice(0, 40)}" ${results.length} 条`)
+    logger.info(`[reach] 搜索命中(bing): ${results.length} 条`)
     return { engine: 'bing', results }
   }
-  logger.warn(`[reach] 搜索无结果: "${safeQuery.slice(0, 40)}"`)
+  logger.warn('[reach] 搜索无结果')
   return null
 }

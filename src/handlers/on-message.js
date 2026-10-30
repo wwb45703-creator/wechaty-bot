@@ -1,125 +1,61 @@
-import { types } from 'wechaty'
-import config, { findRoomConfig } from '../config-loader.js'
+import config from '../config-loader.js'
 import { logger } from '../logger.js'
+import { admitMessage } from '../messaging.js'
 import { handlePrivateMessage } from './private.js'
-import { handleRoomMessage } from './room.js'
+import { handleRoomMessage, checkRoomTrigger, cleanMention } from './room.js'
 import { handleImageMessage, isVisionEnabled } from './on-image.js'
 import { handleEmoticonMessage, isEmoticonEnabled } from './on-emoticon.js'
 import { handleLinkMessage, hasProcessableLink } from './on-link.js'
 import { handleSearchMessage, detectSearchIntent } from './search.js'
-import { checkRoomTrigger } from './room.js'
+import { isForgetCommand } from './text-response.js'
 
-/**
- * 消息总入口：只处理文本消息，按私聊/群聊分流
- */
-/** 统一准入检查：私聊查白名单，群聊查是否在 config.rooms 登记（支持 roomId 或 topic 匹配） */
-async function isAdmitted(msg, room) {
-  if (room) {
-    const topic = await room.topic().catch(() => '')
-    return Boolean(findRoomConfig(topic, room.id))
-  }
-  const t0 = msg.talker()
-  const wl = config.private?.whitelist || []
-  if (wl.length === 0) return true
-  const name = t0.name()
-  const alias = await t0.alias().catch(() => '')
-  return wl.includes(name) || (alias && wl.includes(alias))
-}
-
-const processedMsgIds = new Map() // msgId -> timestamp (防 WeChat / Frida 消息事件重复推送)
-
-export function isDuplicateMessage(msgId) {
-  if (!msgId) return false
-  const now = Date.now()
-  if (processedMsgIds.size > 1000) {
-    for (const [id, time] of processedMsgIds.entries()) {
-      if (now - time > 60000) processedMsgIds.delete(id)
-    }
-  }
-  if (processedMsgIds.has(msgId)) {
-    return true
-  }
-  processedMsgIds.set(msgId, now)
-  return false
-}
-
-export async function onMessage(msg) {
-  try {
-    if (msg.self()) return // 忽略机器人自己发的
-    const msgId = msg.id
-    if (isDuplicateMessage(msgId)) {
-      logger.info(`[去重] 收到重复消息事件已忽略: id=${msgId}`)
-      return
-    }
-    const text = msg.text()
-    const room = msg.room() // wechaty 1.20 中是同步方法：私聊返回 null/undefined
+/** Testable dispatcher: admission precedes every message type and its side effects. */
+export function createOnMessage({ conf = config, admit = (msg, room) => admitMessage(msg, room, conf), typeMap = null,
+  handlers = { private: handlePrivateMessage, room: handleRoomMessage, image: handleImageMessage,
+    emoticon: handleEmoticonMessage, link: handleLinkMessage, search: handleSearchMessage }, trigger = checkRoomTrigger } = {}) {
+  return async function dispatch(msg) {
+    if (msg.self?.()) return
+    const room = msg.room?.() || null
+    const a = await admit(msg, room)
+    if (!a) return { status: 'denied' }
+    const types = typeMap || (await import('wechaty')).types.Message
+    const text = String(msg.text?.() || '')
     const type = msg.type()
-    logger.info(`[诊断] 收到消息 type=${type} room=${room ? 'Y' : 'N'} text=${String(text).slice(0, 30)}`)
-    if (!text || !text.trim()) return
-
-    // 看图说话：图片消息单独走视觉链路（准入与文本一致：私聊白名单、群聊仅已登记群）
-    if (type === types.Message.Image && isVisionEnabled()) {
-      if (await isAdmitted(msg, room)) {
-        await handleImageMessage(msg, room)
-      }
-      return // 图片消息不落入文本链路
-    }
-
-    // 表情包互动：当收到微信大表情/自定义表情包时趣味回应
-    if (type === types.Message.Emoticon && isEmoticonEnabled()) {
-      let admitted = await isAdmitted(msg, room)
-      if (admitted && room) {
-        const topic = await room.topic().catch(() => '')
-        const rc = findRoomConfig(topic, room.id)
-        admitted = Boolean(rc) && (rc.mode === 'all' || (await checkRoomTrigger(msg, text, rc)).triggered)
-      }
-      if (admitted) {
-        await handleEmoticonMessage(msg, room)
-      }
-      return
-    }
-
-    // 只处理"纯文本"消息：Text 类型，或 puppet-xp 判型失败但内容仍是普通文字的 Unknown
-    const isPlainText = type === types.Message.Text ||
-      (type === types.Message.Unknown && !/^\s*</.test(text))
-    if (!isPlainText) return
-
-    // 聊天搜索：触发词开头（"搜一下 XX"）；群聊需满足与文本一致的触发条件（@/唤醒词）
-    // 放在链接分支之前，防止含 URL 的搜索词被链接处理截走
-    const searchQuery = detectSearchIntent(text)
-    if (searchQuery) {
-      let admitted = await isAdmitted(msg, room)
-      if (admitted && room) {
-        const topic = await room.topic().catch(() => '')
-        const rc = findRoomConfig(topic, room.id)
-        admitted = Boolean(rc) && (await checkRoomTrigger(msg, text, rc)).triggered
-      }
-      if (admitted) {
-        await handleSearchMessage(msg, room, searchQuery)
-        return
-      }
-      logger.info(`[搜索] 未准入，落回普通聊天: ${String(text).slice(0, 40)}`)
-    }
-
-    // 链接识别：消息含 URL 时优先走抓取回复
-    // 准入检查（与文本一致）：私聊白名单、群聊仅 config.rooms 已登记的群
-    const roomTopic = room ? await room.topic().catch(() => '') : null
-    const isLinkCandidate = hasProcessableLink(text, roomTopic, room?.id)
-    if (isLinkCandidate) {
-      if (!(await isAdmitted(msg, room))) {
-        logger.info(`[链接] 未准入（白名单/登记群限制），忽略: ${String(text).slice(0, 40)}`)
-        return
-      }
-      await handleLinkMessage(msg, room, text)
-      return
-    }
-
+    const question = room ? cleanMention(text, a.selfName, a.rc) : text.trim()
+    const shortcut = isForgetCommand(question) || question === '我的记忆' ||
+      (conf.dingDong && question.toLowerCase() === 'ding') || (conf.menu?.enabled && question === conf.menu?.keyword)
     if (room) {
-      await handleRoomMessage(msg, room)
-    } else {
-      await handlePrivateMessage(msg)
+      a.trigger = await trigger(msg, text, a.rc)
+      a.shouldAt = a.rc?.atSender === true || (a.rc?.atSender !== false && a.trigger.triggerReason === 'mention')
+      if (!a.trigger.triggered && !shortcut) return { status: 'not-triggered' }
     }
-  } catch (err) {
-    logger.error(`消息处理异常: ${err?.stack || err}`)
+    if (type === types.Image) {
+      if (conf.vision?.enabled !== false) return handlers.image(msg, room, a)
+      return
+    }
+    if (type === types.Emoticon) {
+      if (conf.emoticon?.enabled !== false) return handlers.emoticon(msg, room, a)
+      return
+    }
+    if (!(type === types.Text || (type === types.Unknown && !/^\s*</.test(text))) || !text.trim()) return
+    if (shortcut) return room ? handlers.room(msg, room, a) : handlers.private(msg, a)
+    const query = detectSearchIntent(question)
+    if (query) return handlers.search(msg, room, query, a)
+    if (hasProcessableLink(text, a.topic, room?.id)) return handlers.link(msg, room, text, a)
+    return room ? handlers.room(msg, room, a) : handlers.private(msg, a)
   }
+}
+const dispatch = createOnMessage()
+export async function onMessage(msg) {
+  try { return await dispatch(msg) }
+  catch (error) { logger.error(`消息处理失败: ${error?.code || error?.name || 'unknown'}`) }
+}
+// Compatibility helper for callers which only need process-local duplicate detection.
+const ids = new Map()
+export function isDuplicateMessage(id) {
+  if (!id) return false
+  const stamp = Date.now(), found = ids.has(id)
+  ids.set(id, stamp)
+  if (ids.size > 1000) for (const [key, at] of ids) if (stamp - at > 60000) ids.delete(key)
+  return found
 }

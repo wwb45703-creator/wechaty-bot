@@ -1,185 +1,51 @@
-/**
- * verify-all.mjs — 全局自动化验收自愈门禁套件
- *
- * 门禁清单：
- *  1. 静态语法检查（node --check 递归检查 src/ 和 scripts/ 下所有 JS/MJS 文件）
- *  2. Git 冲突标记扫描（检测 <<<<<<< HEAD, =======, >>>>>>> 避免合并冲突入库）
- *  3. 看门狗纯 ASCII 检查（检测 scripts/supervisor.ps1，杜绝 Win11 任务计划挂起）
- *  4. 链接与 SSRF 防护测试（执行 scripts/test-link.mjs）
- *  5. 联网与全网检索测试（执行 scripts/test-reach.mjs）
- *  6. 长期记忆读写测试（执行 scripts/test-memory.mjs）
- *  7. 群聊免 @ 触发规则测试（执行 scripts/test-room-trigger.mjs）
- *
- * 用法：node scripts/verify-all.mjs
- */
-
-import { spawnSync } from 'node:child_process'
+/** Offline regression gate. Never imports production config or starts platform services. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import { runRegression, runIsolatedScript, REQUIRED_TESTS, PROJECT_ROOT } from './regression-suite.mjs'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const rootDir = path.resolve(__dirname, '..')
-
-const isWin = process.platform === 'win32'
-const nodeBin = process.execPath
-
-let totalPass = 0
-let totalFail = 0
-const failures = []
-
-function logHeader(title) {
-  console.log(`\n==================================================`)
-  console.log(`  ${title}`)
-  console.log(`==================================================`)
+let passed = 0, failed = 0
+function record(name, ok, detail = '') {
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`)
+  ok ? passed++ : failed++
 }
-
-function record(name, passed, detail = '') {
-  if (passed) {
-    totalPass++
-    console.log(`✅ PASS  ${name}${detail ? ' → ' + detail : ''}`)
-  } else {
-    totalFail++
-    failures.push({ name, detail })
-    console.log(`❌ FAIL  ${name}${detail ? ' → ' + detail : ''}`)
+function filesIn(dir, extensions) {
+  const files = []
+  if (!fs.existsSync(dir)) return files
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || ['node_modules', '.git', 'release', 'release-qa'].includes(entry.name)) continue
+    const file = path.join(dir, entry.name)
+    if (entry.isDirectory()) files.push(...filesIn(file, extensions))
+    else if (entry.isFile() && extensions.includes(path.extname(file))) files.push(file)
   }
+  return files
 }
 
-function getAllFiles(dir, extensions) {
-  const result = []
-  if (!fs.existsSync(dir)) return result
-  const list = fs.readdirSync(dir)
-  for (const item of list) {
-    const fullPath = path.join(dir, item)
-    const stat = fs.statSync(fullPath)
-    if (stat.isDirectory()) {
-      if (item !== 'node_modules' && item !== '.git' && item !== 'release') {
-        result.push(...getAllFiles(fullPath, extensions))
-      }
-    } else if (extensions.some((ext) => item.endsWith(ext))) {
-      result.push(fullPath)
-    }
-  }
-  return result
+const source = ['src', 'scripts', 'ui', 'tests'].flatMap(dir => filesIn(path.join(PROJECT_ROOT, dir), ['.js', '.mjs', '.cjs']))
+const syntaxFailures = []
+for (const file of source) {
+  const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8', windowsHide: true, timeout: 15000 })
+  if (result.status !== 0) syntaxFailures.push(`${path.relative(PROJECT_ROOT, file)}: ${(result.stderr || result.error?.message || '').trim()}`)
 }
+record(`JavaScript syntax (${source.length} files)`, syntaxFailures.length === 0, syntaxFailures.join('\n'))
 
-// ----------------------------------------------------
-// 门禁 1: 静态语法检查 (node --check)
-// ----------------------------------------------------
-logHeader('门禁 1: 源码语法检查 (node --check)')
-const srcFiles = getAllFiles(path.join(rootDir, 'src'), ['.js', '.mjs'])
-const scriptFiles = getAllFiles(path.join(rootDir, 'scripts'), ['.js', '.mjs'])
-const allCodeFiles = [...srcFiles, ...scriptFiles]
+const text = ['src', 'scripts', 'ui', 'tests'].flatMap(dir => filesIn(path.join(PROJECT_ROOT, dir), ['.js', '.mjs', '.cjs', '.json', '.html', '.css', '.ps1', '.py', '.vbs']))
+const conflicts = text.filter(file => /^(?:<{7} |={7}$|>{7} )/m.test(fs.readFileSync(file, 'utf8')))
+record('Merge conflict markers', conflicts.length === 0, conflicts.map(file => path.relative(PROJECT_ROOT, file)).join(', '))
+const supervisor = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'supervisor.ps1'))
+record('supervisor.ps1 ASCII', supervisor.every(value => value <= 127))
+const controller = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'bot-ctl.ps1'))
+record('bot-ctl.ps1 UTF-8 BOM', controller[0] === 0xef && controller[1] === 0xbb && controller[2] === 0xbf)
 
-let syntaxErrors = 0
-for (const file of allCodeFiles) {
-  const rel = path.relative(rootDir, file)
-  const res = spawnSync(nodeBin, ['--check', file], { encoding: 'utf8', windowsHide: true })
-  if (res.status === 0) {
-    // 纯通过时不刷屏，保持清爽
-  } else {
-    syntaxErrors++
-    record(`语法检查 [${rel}]`, false, (res.stderr || res.stdout || '').trim().split('\n')[0])
-  }
+const required = REQUIRED_TESTS.filter(file => !fs.existsSync(path.join(PROJECT_ROOT, 'tests', file)))
+record('Required regression suites exist', required.length === 0, required.join(', '))
+if (!required.length) {
+  const discovered = fs.readdirSync(path.join(PROJECT_ROOT, 'tests')).filter(file => file.endsWith('.test.mjs')).sort()
+  record(`Isolated offline behavioral suites (${discovered.length})`, runRegression(discovered) === 0)
 }
-if (syntaxErrors === 0) {
-  record(`全量源文件语法扫描 (${allCodeFiles.length} 个文件)`, true, '全部无语法错误')
-}
-
-// ----------------------------------------------------
-// 门禁 2: Git 冲突标记扫描
-// ----------------------------------------------------
-logHeader('门禁 2: Git 冲突标记扫描')
-let conflictFiles = 0
-const thisScript = fileURLToPath(import.meta.url)
-for (const file of allCodeFiles) {
-  if (path.resolve(file) === path.resolve(thisScript)) continue
-  const content = fs.readFileSync(file, 'utf8')
-  if (content.includes('<<<<<<<' + ' ') || content.includes('=======' + '\n') || content.includes('>>>>>>>' + ' ')) {
-    conflictFiles++
-    const rel = path.relative(rootDir, file)
-    record(`冲突标记检测 [${rel}]`, false, '检测到 Git 合并冲突标记，必须先手动解决')
-  }
-}
-if (conflictFiles === 0) {
-  record('工作树冲突标记扫描', true, '无任何未解决的冲突标记')
-}
-
-// ----------------------------------------------------
-// 门禁 3: 看门狗脚本纯 ASCII 约束 (AGENTS.md 硬规则)
-// ----------------------------------------------------
-logHeader('门禁 3: 看门狗 ASCII 规范检测')
-const supervisorPath = path.join(rootDir, 'scripts', 'supervisor.ps1')
-if (fs.existsSync(supervisorPath)) {
-  const buf = fs.readFileSync(supervisorPath)
-  let nonAscii = 0
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] > 127) nonAscii++
-  }
-  record('supervisor.ps1 纯 ASCII 字节规范', nonAscii === 0, nonAscii === 0 ? '100% 纯 ASCII' : `包含 ${nonAscii} 处非 ASCII 字符`)
-} else {
-  record('supervisor.ps1 文件存在性', false, '文件缺失')
-}
-
-// ----------------------------------------------------
-// 门禁 4 ~ 9: 自动化测试套件执行
-// ----------------------------------------------------
-const suites = [
-  { name: '链接识别与 SSRF 防护测试', script: 'test-link.mjs' },
-  { name: '联网检索与 Agent Reach 测试', script: 'test-reach.mjs' },
-  { name: '长程记忆机制与隔离测试', script: 'test-memory.mjs' },
-  { name: '群聊免 @ 触发规则专项测试', script: 'test-room-trigger.mjs' },
-  { name: '拟真人格演化与三层记忆专项测试', script: 'test-persona-evolution.mjs' },
-  { name: '跨模型人设继承与全场景演化专项测试', script: 'test-cross-model-persona.mjs' },
-  { name: 'AstrBot 本地插件桥接专项测试', script: 'test-astrbot-bridge.mjs' },
-  { name: 'AstrBot 控制台 IPC 桥接专项测试', script: 'test-ui-astrbot-ipc.mjs' },
-  { name: '微信表情包互动专项测试', script: 'test-emoticon.mjs' },
-  { name: '拟真大跨度情绪动态与负面情绪原型专项测试', script: 'test-emotion-v2.mjs' },
-  { name: '微信回复去乱码与句末去多余括号专项验收', script: 'test-clean-reply.mjs' },
-  { name: '群聊用户指令记忆与防复读专项验收', script: 'test-room-directives-and-antirepeat.mjs' },
-  { name: '自进化技能引擎与安全执行门禁测试', script: 'verify-skills.mjs' },
-]
-
-for (const suite of suites) {
-  const scriptPath = path.join(rootDir, 'scripts', suite.script)
-  if (!fs.existsSync(scriptPath)) {
-    // 若尚未创建，先记录（避免阻塞未写出的脚本）
-    continue
-  }
-  logHeader(`门禁套件: ${suite.name} (${suite.script})`)
-  const child = spawnSync(nodeBin, [scriptPath], {
-    encoding: 'utf8',
-    timeout: 180000,
-    windowsHide: true,
-  })
-
-  const out = (child.stdout || '').trim()
-  const err = (child.stderr || '').trim()
-  const ok = child.status === 0
-
-  if (out) console.log(out)
-  if (err && !ok) console.error(err)
-  if (child.error) console.error(`[进程异常] ${child.error.message}`)
-
-  record(suite.name, ok, ok ? '全部断言通过' : (child.error ? child.error.message : `退出码: ${child.status}`))
-}
-
-// ----------------------------------------------------
-// 验收总结
-// ----------------------------------------------------
-console.log(`\n==================================================`)
-console.log(`  全量回归与质量验收总结`)
-console.log(`==================================================`)
-console.log(`总通过项: ${totalPass} 项`)
-console.log(`总失败项: ${totalFail} 项`)
-
-if (totalFail > 0) {
-  console.log(`\n❌ 门禁未通过，发现以下 ${totalFail} 个故障，必须启动自愈：`)
-  for (const f of failures) {
-    console.log(` - ${f.name}: ${f.detail}`)
-  }
-  process.exit(1)
-} else {
-  console.log(`\n🎉 恭喜！全量验收门禁 100% 通过，项目无语法错误、无冲突、功能全部有效！`)
-  process.exit(0)
-}
+record('Reply cleaning compatibility', runIsolatedScript('test-clean-reply.mjs') === 0)
+record('Room trigger compatibility', runIsolatedScript('test-room-trigger.mjs') === 0)
+record('Controller IPC and no-side-effects smoke', runIsolatedScript('test-ui-social-ipc.mjs', ['--experimental-vm-modules']) === 0)
+console.log(`\nOffline verification: ${passed} gates passed, ${failed} failed.`)
+console.log('Live WeChat/Frida/Ollama/third-party service behavior and packaged GUI are separate checks; they were not run by this gate.')
+process.exitCode = failed ? 1 : 0

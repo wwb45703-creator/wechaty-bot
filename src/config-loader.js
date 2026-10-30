@@ -1,12 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const configPath = path.join(__dirname, '..', 'config.json')
+import { CONFIG_FILE } from './runtime-paths.js'
 
 /** 统一加载 config.json（UTF-8），全项目共用这一份 */
-const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+export function loadConfig(file = CONFIG_FILE) {
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'))
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置必须是 JSON 对象')
+  return value
+}
+const config = loadConfig()
 
 export default config
 
@@ -25,9 +27,12 @@ export function findRoomConfig(topicOrRoom, roomId = '') {
     }
   }
 
-  return (config.rooms || []).find((r) => {
-    if (id && r.id && r.id === id) return true
-    if (topic && r.topic && r.topic === topic) return true
-    return false
-  })
+  const rooms = Array.isArray(config.rooms) ? config.rooms : []
+  // An explicit ID never falls back to another configured ID with the same title.
+  if (id) {
+    const exact = rooms.find((r) => r?.id === id)
+    if (exact) return exact
+  }
+  const named = rooms.filter((r) => r && !r.id && topic && r.topic === topic)
+  return named.length === 1 ? named[0] : undefined
 }

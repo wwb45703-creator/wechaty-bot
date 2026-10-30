@@ -1,80 +1,25 @@
-/**
- * 图片消息处理（看图说话）：私聊图片直接吐槽；群聊图片在群未被禁用时吐槽。
- * 视觉模型与文本模型分开配置，Ollama 按显存自动换模。
- */
 import config from '../config-loader.js'
-import { logger } from '../logger.js'
 import { describeImage } from '../ai.js'
-import { checkRate, recordReply } from '../rate-limit.js'
-import { splitBubbles, sendBubbles } from '../utils.js'
+import { processMessage, waitForDelay } from '../messaging.js'
 import { parseImagePaths, findReadableImage, cleanupTemp } from '../image-utils.js'
-import { getActivePersonaName } from '../persona-commands.js'
 
-const DEFAULT_PROMPT =
-  '这是微信里收到的一张图片。用一两句话点评或吐槽这张图，' +
-  '像一个爱玩梗的年轻人在群里说话，中文口语化，简短，不要用markdown，不要描述你看到的字面细节太多。'
-
-export function isVisionEnabled() {
-  return config.vision?.enabled !== false
-}
-
-export async function handleImageMessage(msg, room) {
+export function isVisionEnabled() { return config.vision?.enabled !== false }
+export async function handleImageMessage(msg, room, admission = null) {
   if (!isVisionEnabled()) return
-  try {
-    const talker = msg.talker()
-    const name = talker.name()
-    const isRoom = Boolean(room)
-    const topic = isRoom ? await room.topic().catch(() => '(未知群名)') : null
-
-    const key = isRoom ? `vision:room:${topic}` : `vision:private:${talker.id}`
-    const cooldown = config.vision?.cooldownSeconds ?? 10
-    const limit = checkRate(key, cooldown, 0)
-    if (!limit.allowed) {
-      logger.info(`看图限流中（${isRoom ? `群[${topic}]` : '私聊'} ${name}）`)
-      return
-    }
-
-    const candidates = parseImagePaths(msg.text())
-    // 大图落盘比消息通知慢，带退避重试解析（0/0.8s/2s/4s）
-    let imageFile = null
+  return processMessage({ msg, room, admission, kind: 'image', producer: async (ctx) => {
+    const candidates = parseImagePaths(msg.text?.() || '')
+    let imageFile
     for (const delay of [0, 800, 2000, 4000]) {
-      if (delay) await new Promise((r) => setTimeout(r, delay))
+      if (ctx.signal.aborted) return null
+      if (delay) await waitForDelay(delay, ctx.signal)
       imageFile = findReadableImage(candidates)
       if (imageFile) break
     }
-    if (!imageFile) {
-      logger.warn(`图片消息无法解析出可读文件（${isRoom ? `群[${topic}]` : '私聊'} ${name}），候选: ${JSON.stringify(candidates)}`)
-      return
-    }
-
-    const prompt = config.vision?.prompt || DEFAULT_PROMPT
-    // 看图点评跟随当前群/私聊的人设（完全切换的一部分）
-    const personaRef = { scope: isRoom ? 'room' : 'private', roomId: isRoom ? room.id : undefined, userId: talker.id }
-    const personaName = getActivePersonaName(personaRef)
-    logger.info(`看图说话 -> ${isRoom ? `群[${topic}]` : '私聊'} ${name}: ${imageFile}`)
-    const comment = await describeImage({ imagePath: imageFile, prompt, personaName })
-    cleanupTemp(imageFile)
-
-    if (!comment) {
-      logger.warn('视觉模型无输出，跳过回复')
-      return
-    }
-
-    const bubbles = splitBubbles(comment)
-    if (isRoom) {
-      await sendBubbles(async (t, i) => {
-        logger.info(`[看图说话回复] 群[${topic}] -> ${t.slice(0, 60)}`)
-        if (i === 0) await room.say(`@${name} ${t}`, talker)
-        else await room.say(t)
-      }, bubbles)
-    } else {
-      await sendBubbles((t) => {
-        logger.info(`[看图说话回复私聊] ${name} -> ${t.slice(0, 60)}`)
-        return msg.say(t)
-      }, bubbles)
-    }
-    recordReply(key, 0)
-  } catch (err) {
-    logger.error(`图片处理异常: ${err?.stack || err}`)
-  }
+    if (!imageFile) return null
+    try {
+      const text = await describeImage({ imagePath: imageFile, prompt: config.vision?.prompt || '用一两句自然口语回应图片，不确定时如实说明',
+        personaName: ctx.scope.personaId, scope: ctx.scope, epoch: ctx.epoch, signal: ctx.signal })
+      return { text, userText: '分享了一张图片', extract: false, learn: Boolean(text) }
+    } finally { cleanupTemp(imageFile) }
+  } })
 }

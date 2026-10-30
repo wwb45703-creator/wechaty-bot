@@ -72,6 +72,18 @@ contextBridge.exposeInMainWorld('botctl', {
   getRelationship: (...args) => ipcRenderer.invoke('getRelationship', ...args),
   deleteRelationship: (...args) => ipcRenderer.invoke('deleteRelationship', ...args),
 
+  listSkillReviews: () => ipcRenderer.invoke('skills:list'),
+  getSkillReview: (id) => ipcRenderer.invoke('skills:detail', id),
+  proposeSkill: (request) => ipcRenderer.invoke('skills:propose', request),
+  evaluateSkill: (id) => ipcRenderer.invoke('skills:evaluate', id),
+  activateSkill: (request) => ipcRenderer.invoke('skills:activate', request),
+  rejectSkill: (id) => ipcRenderer.invoke('skills:reject', id),
+  rollbackSkill: (request) => ipcRenderer.invoke('skills:rollback', request),
+  deactivateSkill: (request) => ipcRenderer.invoke('skills:deactivate', request),
+  listSocialScopes: () => ipcRenderer.invoke('social:list'),
+  getSocialScope: (scope) => ipcRenderer.invoke('social:detail', scope),
+  forgetSocialSubject: (request) => ipcRenderer.invoke('social:forget', request),
+
   // AstrBot 插件生态与知识库管理
   astrbotGetStatus: (...args) => ipcRenderer.invoke('astrbot:status', ...args),
   astrbotGetPlugins: (...args) => ipcRenderer.invoke('astrbot:plugins:list', ...args),

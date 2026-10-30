@@ -24,10 +24,10 @@ export function getShanghaiDateStr() {
  * @param {string} [customGreeting] 自定义问候语前缀
  * @returns {Promise<string>} 排版好的早报文本
  */
-export async function generateMorningBrief(customGreeting = '早上好！') {
+export async function generateMorningBrief(customGreeting = '早上好！', options = {}) {
   const dateStr = getShanghaiDateStr()
   try {
-    const res = await webSearch('今日国内要闻', { numResults: 5 })
+    const res = await webSearch('今日国内要闻', { numResults: 5, signal: options.signal, deadline: options.deadline })
     const items = res?.results || []
     if (!items.length) {
       return `☀️ ${customGreeting}今天是 ${dateStr}，祝大家今天都有好心情！`

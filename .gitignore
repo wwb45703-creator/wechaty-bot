@@ -13,5 +13,7 @@ config.json
 *.memory/
 .DS_Store
 ui/release/
+ui/release-qa/
+.test-artifacts/
 ui/node_modules/
 data/

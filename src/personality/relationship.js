@@ -11,10 +11,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { dataPath } from '../runtime-paths.js'
+import { getSocialState } from '../social/index.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..', '..')
-const REL_DIR = path.join(rootDir, 'state', 'relationships')
+const REL_DIR = dataPath('state', 'legacy', 'relationships')
 
 function sanitizeId(id) {
   return String(id || '').replace(/[^\w\-@.]/g, '_')
@@ -76,7 +78,8 @@ export function applyRelationshipDecay(rel) {
 /**
  * 加载特定成员的关系档案（自动施加时间衰减检测）
  */
-export function getRelationship(userId, displayName = '') {
+export function getRelationship(userId, displayName = '', scope) {
+  if (scope || (userId && typeof userId === 'object')) return getSocialState(scope || userId).relationship
   if (!userId) {
     return {
       userId: 'unknown',

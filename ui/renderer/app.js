@@ -201,6 +201,14 @@ async function refreshEmotionDashboard() {
   const fn = api('getEmotionState');
   if (!fn) return;
   const res = await fn();
+  if (res?.scopeRequired) {
+    $('home-emotion-summary').textContent = '角色与情绪按会话独立，请在社交成长页查看';
+    for (const name of ['pleasure', 'arousal', 'tension', 'fatigue']) {
+      $('home-val-' + name).textContent = '—';
+      $('bar-' + name).style.width = '0%';
+    }
+    return;
+  }
   if (!res || !res.ok || !res.emotion) return;
 
   const emo = res.emotion;
@@ -1161,9 +1169,129 @@ async function onRunKbQuery() {
   }
 }
 
+/* ==================== 技能审核与按范围遗忘 ==================== */
+let selectedReview = null;
+let socialScopes = [];
+async function reviewCall(name, ...args) {
+  const call = api(name);
+  if (!call) throw new Error('主进程接口不可用');
+  const result = await call(...args);
+  if (!result?.ok) throw new Error(result?.error || '操作失败');
+  return result;
+}
+async function refreshSkillReviews() {
+  try {
+    const r = await reviewCall('listSkillReviews');
+    $('skill-sources').innerHTML = '<h3>候选来源</h3>' +
+      r.examples.map((s) => `<div class="review-row">样例 · ${escapeHtml(s.name)} <span class="sub-hint">待审</span><button class="btn" data-propose-kind="bundled-example" data-source-id="${escapeHtml(s.id)}">创建待审候选</button></div>`).join('') +
+      r.traces.map((t) => `<div class="review-row">纠错分类：${escapeHtml(t.category)} · ${escapeHtml(formatTime(t.timestamp))}<div class="sub-hint">来源 ${escapeHtml(t.id)}，未保存聊天原文</div>${['reply-length', 'reply-format', 'fetch-failed'].includes(t.category) ? `<button class="btn" data-propose-kind="trace-template" data-source-id="${escapeHtml(t.id)}">从保守模板提案</button>` : '<span class="sub-hint">此类问题须人工分析，暂不自动生成</span>'}</div>`).join('');
+    $('skill-reviews').innerHTML = '<h3>审核队列</h3>' + (r.candidates.length ? r.candidates.map((c) => `<div class="review-row"><strong>${escapeHtml(c.name)}</strong> · ${escapeHtml(r.active[c.skillId] === c.hash ? '生效中' : c.status === 'active' ? '已审历史' : c.status)}<div class="sub-hint">${escapeHtml(c.hash.slice(0, 16))} · 来源 ${escapeHtml(c.sources.kind)} · 评测 ${c.evaluation ? (c.evaluation.passed ? '通过' : '未通过') : '未运行'}</div><button class="btn" data-review-id="${escapeHtml(c.id)}">查看来源与差异</button></div>`).join('') : '<p class="sub-hint">尚无候选，普通聊天不会自动启用技能。</p>');
+    const versionIds = [...new Set([...Object.keys(r.history || {}), ...Object.keys(r.active || {})])];
+    $('skill-versions').innerHTML = versionIds.map((id) => {
+      const activeHash = r.active[id];
+      return `<div class="review-row">${escapeHtml(id)} · ${activeHash ? escapeHtml(activeHash.slice(0, 16)) : '已停用'}<div class="review-actions">${activeHash ? `<button class="btn danger" data-deactivate-id="${escapeHtml(id)}">停用</button>` : ''}${(r.history[id] || []).filter((h) => h !== activeHash).map((h) => `<button class="btn" data-rollback-id="${escapeHtml(id)}" data-rollback-hash="${escapeHtml(h)}">${activeHash ? '回滚到' : '启用已审版本'} ${escapeHtml(h.slice(0, 12))}</button>`).join('')}</div></div>`;
+    }).join('') || '<p class="sub-hint">当前没有已审核技能版本</p>';
+  } catch (e) { toast(e.message, true); }
+}
+async function showSkillReview(id) {
+  try {
+    const r = await reviewCall('getSkillReview', id);
+    selectedReview = r.data;
+    $('skill-review-detail').hidden = false;
+    $('skill-review-title').textContent = `${r.data.content.name} · ${r.data.hash}`;
+    $('skill-before').textContent = r.data.previous ? JSON.stringify(r.data.previous, null, 2) : '尚未启用过此技能';
+    $('skill-after').textContent = JSON.stringify({ source: r.data.sources, content: r.data.content }, null, 2);
+    $('skill-evaluation').textContent = r.data.evaluation ? JSON.stringify(r.data.evaluation, null, 2) : '尚未运行独立离线评测。联网动作仅使用 mock。';
+    $('skill-review-confirm').checked = false;
+    $('btn-activate-skill').disabled = !r.data.evaluation?.passed || r.data.status === 'rejected';
+    $('btn-reject-skill').disabled = r.data.activeHash === r.data.hash;
+  } catch (e) { toast(e.message, true); }
+}
+async function onReviewAction(event) {
+  const button = event.target.closest('button');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    if (button.dataset.proposeKind) {
+      const r = await reviewCall('proposeSkill', { kind: button.dataset.proposeKind, id: button.dataset.sourceId });
+      await refreshSkillReviews(); await showSkillReview(r.data.id);
+    } else if (button.dataset.reviewId) await showSkillReview(button.dataset.reviewId);
+    else if (button.dataset.deactivateId) {
+      showModal('确认停用', `<p>停用技能 ${escapeHtml(button.dataset.deactivateId)}？已审核的历史版本会保留，可在需要时重新启用。</p><button class="btn danger" id="confirm-skill-deactivate">确认停用</button>`);
+      $('confirm-skill-deactivate').addEventListener('click', async () => {
+        try { await reviewCall('deactivateSkill', { skillId: button.dataset.deactivateId, confirmed: true }); closeModal(); await refreshSkillReviews(); toast('已停用'); } catch (e) { toast(e.message, true); }
+      });
+    } else if (button.dataset.rollbackId) {
+      showModal('确认回滚', `<p>回滚技能 ${escapeHtml(button.dataset.rollbackId)} 至已审核版本 ${escapeHtml(button.dataset.rollbackHash.slice(0, 16))}？</p><button class="btn" id="confirm-skill-rollback">确认回滚</button>`);
+      $('confirm-skill-rollback').addEventListener('click', async () => {
+        try { await reviewCall('rollbackSkill', { skillId: button.dataset.rollbackId, hash: button.dataset.rollbackHash, confirmed: true }); closeModal(); await refreshSkillReviews(); toast('已回滚'); } catch (e) { toast(e.message, true); }
+      });
+    }
+  } catch (e) { toast(e.message, true); }
+  finally { button.disabled = false; }
+}
+async function changeSkillReview(action) {
+  if (!selectedReview) return;
+  if (action === 'activate' && !$('skill-review-confirm').checked) return toast('请先阅读并确认当前版本', true);
+  const buttons = ['btn-evaluate-skill', 'btn-activate-skill', 'btn-reject-skill'].map($);
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    if (action === 'evaluate') await reviewCall('evaluateSkill', selectedReview.id);
+    if (action === 'activate') await reviewCall('activateSkill', { id: selectedReview.id, hash: selectedReview.hash, confirmed: true });
+    if (action === 'reject') await reviewCall('rejectSkill', selectedReview.id);
+    await refreshSkillReviews(); await showSkillReview(selectedReview.id);
+    toast(action === 'evaluate' ? '离线评测完成，请检查每项结果' : action === 'activate' ? '已启用审核版本' : '已拒绝候选');
+  } catch (e) { toast(e.message, true); }
+  finally { $('btn-evaluate-skill').disabled = false; $('btn-reject-skill').disabled = selectedReview?.activeHash === selectedReview?.hash; }
+}
+function currentSocialScope() { return socialScopes[Number($('social-scope-select').value)]?.scope; }
+async function showSocialScope() {
+  $('forget-subject-confirm').checked = false;
+  const scope = currentSocialScope();
+  if (!scope) {
+    $('social-scope-summary').textContent = '尚无社交成长记录';
+    $('social-scope-detail').textContent = '机器人在已确认发送的互动后积累成长；未发送的回复不会增加关系分。';
+    return;
+  }
+  try {
+    const r = await reviewCall('getSocialScope', scope);
+    const d = r.data;
+    $('social-scope-summary').textContent = `角色 ${d.scope.personaId} · 用户 ${d.displayName || d.scope.subjectId} · 已确认互动 ${d.relationship.interactionCount} 次`;
+    $('social-scope-detail').textContent = JSON.stringify({
+      当前范围: d.scope,
+      独立角色: { 名称: d.persona.name, 性格: d.persona.traits, 基线: d.persona.baselineTraits, 兴趣: d.persona.hobbies },
+      当前关系: d.relationship,
+      当前情绪: d.emotion,
+      有限表达偏好: d.preferences,
+      事实与来源: d.memory.facts,
+      共同经历与来源: d.memory.episodes,
+      语义记录与来源: d.memory.semantics,
+    }, null, 2);
+  } catch (e) { toast(e.message, true); }
+}
+async function refreshSocialScopes() {
+  try {
+    const r = await reviewCall('listSocialScopes'); socialScopes = r.list;
+    $('social-scope-select').innerHTML = socialScopes.map((row, i) => `<option value="${i}">${escapeHtml([row.scope.accountId, row.scope.conversationId, row.scope.personaId, row.scope.subjectId].join(' / '))}</option>`).join('');
+    await showSocialScope();
+  } catch (e) { toast(e.message, true); }
+}
+async function forgetCurrentSubject() {
+  const scope = currentSocialScope();
+  if (!scope || !$('forget-subject-confirm').checked) return toast('请选择用户并确认清除范围', true);
+  $('btn-forget-subject').disabled = true;
+  try {
+    await reviewCall('forgetSocialSubject', { scope, allConversations: $('forget-all-conversations').checked, confirmed: true });
+    $('social-forget-result').textContent = '已完成遗忘；相关待审轨迹与候选也已清除。';
+    await refreshSocialScopes();
+  } catch (e) { toast(e.message, true); }
+  finally { $('btn-forget-subject').disabled = false; }
+}
+
 /* ==================== 页面切换 ==================== */
 
 function switchPage(name) {
+  if (['persona', 'relationships', 'memories'].includes(name)) name = 'social-growth';
   document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.page === name));
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + name));
 
@@ -1182,6 +1310,10 @@ function switchPage(name) {
     refreshPluginsPage();
   } else if (name === 'knowledge') {
     refreshKnowledgePage();
+  } else if (name === 'skill-review') {
+    refreshSkillReviews();
+  } else if (name === 'social-growth') {
+    refreshSocialScopes();
   }
 }
 
@@ -1189,6 +1321,16 @@ function switchPage(name) {
 
 function init() {
   initTheme();
+  $('btn-refresh-reviews')?.addEventListener('click', refreshSkillReviews);
+  $('skill-sources')?.addEventListener('click', onReviewAction);
+  $('skill-reviews')?.addEventListener('click', onReviewAction);
+  $('skill-versions')?.addEventListener('click', onReviewAction);
+  $('btn-evaluate-skill')?.addEventListener('click', () => changeSkillReview('evaluate'));
+  $('btn-activate-skill')?.addEventListener('click', () => changeSkillReview('activate'));
+  $('btn-reject-skill')?.addEventListener('click', () => changeSkillReview('reject'));
+  $('btn-refresh-social')?.addEventListener('click', refreshSocialScopes);
+  $('social-scope-select')?.addEventListener('change', showSocialScope);
+  $('btn-forget-subject')?.addEventListener('click', forgetCurrentSubject);
 
   // 导航绑定
   document.querySelectorAll('.nav-item').forEach((n) => {

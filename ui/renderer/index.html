@@ -43,6 +43,12 @@
       <button class="nav-item" data-page="knowledge">
         <span class="nav-icon">📖</span><span>知识库技能</span>
       </button>
+      <button class="nav-item" data-page="skill-review">
+        <span class="nav-icon">✓</span><span>技能审核</span>
+      </button>
+      <button class="nav-item" data-page="social-growth">
+        <span class="nav-icon">🌱</span><span>社交成长</span>
+      </button>
       <button class="nav-item" data-page="about">
         <span class="nav-icon">ℹ️</span><span>关于</span>
       </button>
@@ -66,7 +72,7 @@
               <div class="status-badges">
                 <span class="badge" id="badge-bot">检测中…</span>
                 <span class="badge badge-model" id="badge-model" title="当前模型">—</span>
-                <span class="badge badge-persona" id="badge-home-persona">人设：鹅王</span>
+                <span class="badge badge-persona" id="badge-home-persona">人设：按会话独立</span>
               </div>
             </div>
             <button class="power-btn" id="btn-power" title="启动机器人">
@@ -101,7 +107,7 @@
         <div class="card dashboard-card">
           <div class="status-row">
             <div class="card-title">短期即时情绪与演化状态</div>
-            <span class="sub-hint" id="home-emotion-summary">情绪稳定，自然放松</span>
+            <span class="sub-hint" id="home-emotion-summary">请在社交成长页选择会话与角色</span>
           </div>
           <div class="emotion-meter-grid">
             <div class="emotion-meter">
@@ -359,12 +365,44 @@
       </section>
 
       <!-- ===== 关于 ===== -->
+      <section class="page" id="page-skill-review">
+        <div class="card">
+          <h2>技能审核</h2>
+          <p class="sub-hint">纠错仅留下脱敏分类与来源编号。候选经过固定离线用例评测，再由你启用；现有样例默认待审，不会自动运行。</p>
+          <button class="btn" id="btn-refresh-reviews">刷新</button>
+          <div id="skill-sources"></div>
+          <div id="skill-reviews"></div>
+        </div>
+        <div class="card" id="skill-review-detail" hidden>
+          <h3 id="skill-review-title">候选差异</h3>
+          <div class="review-diff"><div><h4>当前有效版本</h4><pre id="skill-before"></pre></div><div><h4>候选版本</h4><pre id="skill-after"></pre></div></div>
+          <pre id="skill-evaluation"></pre>
+          <label class="sub-hint"><input type="checkbox" id="skill-review-confirm"> 我已阅读来源、差异和评测结果，确认启用此内容哈希的版本</label>
+          <div class="review-actions"><button class="btn" id="btn-evaluate-skill">运行离线评测</button><button class="btn" id="btn-activate-skill">确认启用</button><button class="btn" id="btn-reject-skill">拒绝</button></div>
+        </div>
+        <div class="card"><h3>有效版本与回滚</h3><p class="sub-hint">只能回滚到已人工审核并通过评测的历史版本。</p><div id="skill-versions"></div></div>
+      </section>
+      <section class="page" id="page-social-growth">
+        <div class="card">
+          <h2>社交成长与遗忘</h2>
+          <p class="sub-hint">每个角色独立成长，关系与记忆按账号和会话隔离。先选择当前用户所在的范围，再查看或遗忘。</p>
+          <button class="btn" id="btn-refresh-social">刷新范围</button>
+          <select class="text-input" id="social-scope-select" aria-label="账号、会话、角色与用户范围"></select>
+          <p id="social-scope-summary" class="sub-hint">请选择一个已建立的社交范围</p>
+          <pre id="social-scope-detail">选择范围后查看角色、关系、情绪及记忆来源</pre>
+          <label class="sub-hint"><input type="checkbox" id="forget-all-conversations"> 跨当前账号的全部会话，遗忘该用户（所有角色）</label>
+          <p class="sub-hint">未勾选时：仅清除选定会话中该用户的全部角色记忆、关系和待审轨迹。勾选时：扩展到此账号的所有会话。会撤销进行中的相关回复，删除来源候选；平台聊天记录和其他用户资料不在清除范围。</p>
+          <label class="sub-hint"><input type="checkbox" id="forget-subject-confirm"> 我已核对账号、用户与范围，确认清除</label>
+          <div class="review-actions"><button class="btn" id="btn-forget-subject">忘记当前用户</button></div>
+          <div id="social-forget-result" role="status"></div>
+        </div>
+      </section>
       <section class="page" id="page-about">
         <div class="card">
           <div class="card-title">关于控制台</div>
           <div class="about-line">微信机器人控制台 v1.2.0</div>
           <div class="about-line">本地项目路径：D:\wechaty-bot</div>
-          <div class="about-line">AI 推理引擎：本地 Ollama（数据 100% 离线留存本机，保护好友隐私）</div>
+          <div class="about-line">AI 推理与社交存储：本地 Ollama；云端模型默认关闭，公开检索按启用的联网功能处理</div>
           <div class="about-line">拟真交互架构：五维人格阻尼演化 + 短期弹性情绪 + 三层隔离记忆系统</div>
           <div class="about-line">系统字体：MiSans（小米公司提供，免费商用）</div>
         </div>

@@ -1,9 +1,6 @@
 /* 微信机器人控制台 —— 粉白温润毛玻璃 + 深色模式 + Fluent 精致微交互 */
 
-/* ===== MiSans 字体（本地打包，离线可用） ===== */
-@font-face { font-family: "MiSans"; src: url("../node_modules/misans/lib/Normal/MiSans-Regular.min.woff2") format("woff2"); font-weight: 400; font-display: swap; }
-@font-face { font-family: "MiSans"; src: url("../node_modules/misans/lib/Normal/MiSans-Medium.min.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-@font-face { font-family: "MiSans"; src: url("../node_modules/misans/lib/Normal/MiSans-Demibold.min.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+/* Windows system font stack: no downloaded font requests or invalid placeholder files. */
 
 :root {
   --bg-gradient: linear-gradient(135deg, #fff0f5 0%, #ffe4ee 45%, #ffd6e0 100%);
@@ -441,3 +438,13 @@ body {
   border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.6; color: var(--text-sub);
 }
 .kb-chunk-score { font-size: 11px; color: var(--accent); margin-bottom: 4px; font-weight: 600; }
+/* Review and scoped social state use the existing console surfaces. */
+.review-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.review-diff > div { min-width: 0; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+.review-row { border-bottom: 1px solid var(--border, #ddd); padding: 14px 0; }
+.review-row button { margin: 6px; }
+#page-skill-review pre, #page-social-growth pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; font-size: 12px; line-height: 1.6; padding: 12px; border: 1px solid var(--border, #ddd); border-radius: 8px; }
+#social-scope-select { display: block; width: 100%; margin: 16px 0; }
+#page-skill-review [hidden] { display: none; }
+@media (max-width: 1100px) { .review-diff { grid-template-columns: 1fr; } }

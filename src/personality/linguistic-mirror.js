@@ -10,10 +10,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { dataPath } from '../runtime-paths.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..', '..')
-const SLANG_DIR = path.join(rootDir, 'state', 'slang')
+const SLANG_DIR = dataPath('state', 'legacy', 'slang')
 
 // 常见中文高频网络俚语/口头禅模式库
 const SLANG_PATTERNS = [

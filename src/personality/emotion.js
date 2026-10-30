@@ -19,10 +19,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { dataPath } from '../runtime-paths.js'
+import { getSocialState } from '../social/index.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(__dirname, '..', '..')
-const EMOTION_FILE = path.join(rootDir, 'state', 'emotion-state.json')
+const EMOTION_FILE = dataPath('state', 'legacy', 'emotion-state.json')
 
 export const BASELINE = {
   pleasure: 0,     // 愉悦度 (-60 ~ +60, 0 为平和)
@@ -187,7 +189,8 @@ export function processMessageStimulus(text, isConflict = false) {
 }
 
 /** 获取当前情绪数值（自动施加衰减） */
-export function getEmotionState() {
+export function getEmotionState(scope) {
+  if (scope) return getSocialState(scope).emotion
   applyDecay()
   return { ...currentEmotion }
 }
@@ -203,8 +206,8 @@ export function resetEmotion() {
  * 判定当前的拟人情绪原型
  * @returns {string} EMOTION_ARCHETYPES 枚举值
  */
-export function getEmotionArchetype() {
-  const st = getEmotionState()
+export function getEmotionArchetype(scope) {
+  const st = getEmotionState(scope)
 
   // 1. 社交电量耗尽（疲劳压倒一切）
   if (st.fatigue >= 60 && st.arousal <= 40) {
@@ -233,9 +236,9 @@ export function getEmotionArchetype() {
 /**
  * 格式化为注入 System Prompt 的情绪提示词引导（强力约束句式、语气与字数）
  */
-export function formatEmotionPrompt() {
-  const st = getEmotionState()
-  const archetype = getEmotionArchetype()
+export function formatEmotionPrompt(scope) {
+  const st = getEmotionState(scope)
+  const archetype = getEmotionArchetype(scope)
 
   let archetypeGuide = ''
   let archetypeLabel = ''

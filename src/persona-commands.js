@@ -1,86 +1,44 @@
-/**
- * 人设切换命令处理：人设列表 / 变成<角色> / 切换人设 <角色> / 恢复默认
- * handlePersonaCommand 返回 true 表示 text 是人设命令且已回复。
- *
- * 完全切换：切换/恢复成功后调用 resetConversation(chatKey) 清空该会话的
- * 短期对话记忆——新角色不会读到旧角色的上下文（否则会延续旧口吻）。
- */
 import config from './config-loader.js'
 import { getPersonaName, setPersonaName } from './state.js'
-import { resetConversation } from './ai.js'
+import { getSocialState } from './social/index.js'
 
-function roleNames() {
-  return Object.keys(config.personas || {})
+const roleNames = () => Object.keys(config.personas || {})
+const defaultName = () => config.defaultPersona || roleNames()[0] || '鹅王'
+function stateRef(ref = {}) {
+  if (!ref.conversationId) return ref
+  const room = ref.conversationId.startsWith('room:')
+  return { ...ref, scope: room ? 'room' : 'private', roomId: room ? ref.conversationId.slice(5) : undefined,
+    userId: room ? ref.subjectId : ref.conversationId.slice(8) }
 }
-
-function defaultName() {
-  return config.defaultPersona || roleNames()[0] || '鹅王'
-}
-
 export function getActivePersonaName(ref) {
-  const fallback = defaultName()
-  const name = getPersonaName(ref, fallback)
-  // 状态里存的角色可能已被从 config 删除，回落默认
-  return config.personas?.[name] ? name : fallback
+  const fallback = defaultName(), name = getPersonaName(stateRef(ref), fallback)
+  return config.personas && Object.hasOwn(config.personas, name) ? name : fallback
 }
-
-/**
- * @param {object} p
- * @param {string} p.text    清理过 @ 噪音的文本
- * @param {object} p.ref     { scope, roomId?, userId }
- * @param {string} [p.chatKey] 该会话的 chat() 会话键（room:<topic> / private:<id>），切换人设时用于清空短期记忆
- * @param {(t: string) => Promise<void>} p.reply 回复函数
- * @returns {boolean} 是否为人设命令（已处理）
- */
-export function handlePersonaCommand({ text, ref, chatKey, reply }) {
+export function isPersonaCommand(text) {
+  return /^(?:人设列表|角色列表|性格状态|人格状态|心理状态|恢复默认|恢复人设|变成.{1,40}|切换人设[:：\s]*.{1,40})$/.test(String(text || '').trim())
+}
+export async function handlePersonaCommand({ text, ref, reply }) {
   if (!config.personas) return false
-  const t = String(text || '').trim()
-  const current = getActivePersonaName(ref)
-
+  const t = String(text || '').trim(), current = getActivePersonaName(ref)
   if (t === '人设列表' || t === '角色列表') {
-    reply(`可选角色：${roleNames().join(' / ')}\n当前激活：${current}\n切换说"变成<角色名>"，恢复默认说"恢复默认"，查演化参数说"性格状态"`)
+    await reply(`可选角色：${roleNames().join(' / ')}\n当前激活：${current}\n变成<角色名> 可切换，各角色保留独立对话和成长记录`)
     return true
   }
-  if (t === '性格状态' || t === '人格状态' || t === '心理状态') {
-    import('./personality/persona-state.js').then(({ getPersonaState }) => {
-      import('./personality/emotion.js').then(({ getEmotionState }) => {
-        const st = getPersonaState()
-        const emo = getEmotionState()
-        const hobbies = (st.hobbies || []).map((h) => `${h.name}(${h.status === 'active' ? '已确立' : '萌芽中'})`).join('、') || '待定'
-        reply(`📊 【鹅王·当前拟真心理与演化状态】\n` +
-          `深层性格（五维演化值）：\n` +
-          ` • 外向性: ${st.traits['外向性']}/100\n` +
-          ` • 好奇心: ${st.traits['好奇心']}/100\n` +
-          ` • 情绪敏感度: ${st.traits['情绪敏感度']}/100\n` +
-          ` • 幽默倾向: ${st.traits['幽默倾向']}/100\n` +
-          ` • 信任倾向: ${st.traits['信任倾向']}/100\n\n` +
-          `动态沉淀爱好: ${hobbies}\n\n` +
-          `即时情绪: 愉悦 ${emo.pleasure} | 兴奋 ${emo.arousal} | 防御 ${emo.tension} | 疲劳 ${emo.fatigue}`)
-      })
-    })
+  if (['性格状态', '人格状态', '心理状态'].includes(t)) {
+    const state = getSocialState({ ...ref, personaId: current })
+    const traits = Object.entries(state.persona?.traits || {}).map(([k, v]) => `${k}: ${v}`).join('，')
+    await reply(`【${current} · 当前成长状态】\n${traits}\n共同互动: ${state.relationship?.interactionCount || 0} 次\n兴趣: ${(state.persona?.hobbies || []).map((h) => h.name || h).join('、') || '尚未形成'}\n这些是行为状态记录，可通过“忘记我”删除此会话中与你有关的记录`)
     return true
   }
-  if (t === '恢复默认' || t === '恢复人设') {
-    setPersonaName(ref, defaultName())
-    if (chatKey) resetConversation(chatKey)
-    reply(`已恢复默认人设：${defaultName()} ✓（对话记忆已重置，完全以新身份开始）`)
-    return true
-  }
-  let name = null
-  const m1 = t.match(/^变成(.{1,12})$/)
-  const m2 = t.match(/^切换人设[:：\s]*(.{1,12})$/)
-  name = m1 ? m1[1].trim() : m2 ? m2[1].trim() : null
+  let name
+  if (t === '恢复默认' || t === '恢复人设') name = defaultName()
+  else name = (t.match(/^变成(.{1,40})$/) || t.match(/^切换人设[:：\s]*(.{1,40})$/))?.[1]?.trim()
   if (!name) return false
-  if (!config.personas[name]) {
-    reply(`没有叫"${name}"的角色哦～可选：${roleNames().join(' / ')}`)
-    return true
+  if (!Object.hasOwn(config.personas, name)) await reply(`没有叫“${name}”的角色，可选：${roleNames().join(' / ')}`)
+  else if (name === current) await reply(`当前就是${name}`)
+  else {
+    setPersonaName(stateRef(ref), name)
+    await reply(`已切换为${name}；该角色保留自己的对话记录`)
   }
-  if (name === current) {
-    reply(`当前就是${name}啦～`)
-    return true
-  }
-  setPersonaName(ref, name)
-  if (chatKey) resetConversation(chatKey)
-  reply(`人设已完全切换：${name} ✓（之前的对话记忆已清空，现在是全新的人设）`)
   return true
 }

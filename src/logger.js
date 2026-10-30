@@ -1,9 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dataPath } from './runtime-paths.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const logDir = path.join(__dirname, '..', 'logs')
+const logDir = dataPath('logs')
 fs.mkdirSync(logDir, { recursive: true })
 
 function append(line) {

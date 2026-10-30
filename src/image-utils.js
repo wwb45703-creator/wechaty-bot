@@ -6,7 +6,8 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
+import config from './config-loader.js'
+import { isTestMode } from './runtime-paths.js'
 
 const MAGICS = [
   Buffer.from([0xff, 0xd8, 0xff]), // jpg
@@ -76,6 +77,8 @@ function discoverWechatRoots() {
   if (discovered) return ROOTS
   discovered = true
   const found = []
+  if (config.vision?.wechatFilesRoot) found.push(path.resolve(config.vision.wechatFilesRoot))
+  if (isTestMode) { ROOTS = found; return ROOTS }
   try {
     const drives = ['C', 'D', 'E', 'F', 'G']
     for (const d of drives) {
@@ -124,6 +127,3 @@ export function cleanupTemp(file) {
     if (/\.dec/.test(String(file))) fs.rmSync(file, { force: true })
   } catch {}
 }
-
-// 防止 crypto 未使用告警（保留给未来 hash 需求）
-void crypto

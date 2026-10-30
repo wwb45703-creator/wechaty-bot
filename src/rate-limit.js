@@ -1,58 +1,65 @@
-/**
- * 全局限流：每个会话的冷却时间 + 每日回复上限，防止刷屏与账号风险
- */
+import fs from 'node:fs'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { dataPath } from './runtime-paths.js'
 
-const cooldowns = new Map() // key -> 上次回复时间戳
-const dailyCounts = new Map() // `date:key` -> 当日已回复条数
+const dayAt = (now) => new Date(now).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 
-/** 返回东八区（Asia/Shanghai）当前日期字符串，格式 YYYY-MM-DD */
-function today() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
-}
-
-// 每小时清理过期的 cooldowns 条目（避免长期运行后 Map 无限累积）
-// 保守清理：删除超过 2 小时未活动的条目（最大冷却时间通常不超过 300s）
-setInterval(() => {
-  const cutoff = Date.now() - 2 * 60 * 60 * 1000
-  for (const [k, ts] of cooldowns.entries()) {
-    if (ts < cutoff) cooldowns.delete(k)
+/** Atomic process-local reservations; persisted holds count after a restart. */
+export function createRateLimiter({ file = null, now = Date.now } = {}) {
+  let state = { version: 1, counts: {}, cooldowns: {}, holds: {} }
+  if (file && fs.existsSync(file)) {
+    const loaded = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (loaded.version !== 1 || !loaded.counts || !loaded.holds) throw new Error('Invalid rate-limit state')
+    state = loaded
   }
-}, 60 * 60 * 1000).unref()
-
-/**
- * @param {string} key        会话 key
- * @param {number} cooldownSeconds 冷却秒数
- * @param {number} dailyLimit 每日上限（0 或负数表示不限制）
- * @returns {{allowed: boolean, reason?: string, remainingSeconds?: number}}
- */
-export function checkRate(key, cooldownSeconds, dailyLimit) {
-  const now = Date.now()
-  const last = cooldowns.get(key) || 0
-  const elapsed = (now - last) / 1000
-  if (elapsed < cooldownSeconds) {
-    return { allowed: false, reason: 'cooldown', remainingSeconds: Math.ceil(cooldownSeconds - elapsed) }
+  function save() {
+    if (!file) return
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(state), 'utf8')
+    fs.renameSync(tmp, file)
   }
-  if (dailyLimit > 0) {
-    const dayKey = `${today()}:${key}`
-    const used = dailyCounts.get(dayKey) || 0
-    if (used >= dailyLimit) {
-      return { allowed: false, reason: 'dailyLimit' }
+  function check(key, cooldownSeconds = 0, dailyLimit = 0) {
+    const stamp = now(), day = dayAt(stamp)
+    const last = state.cooldowns[key]?.time
+    const remaining = last == null ? 0 : Number(cooldownSeconds) - (stamp - last) / 1000
+    if (remaining > 0) return { allowed: false, reason: 'cooldown', remainingSeconds: Math.ceil(remaining) }
+    const pending = Object.values(state.holds).filter((h) => h.day === day && h.limits.some((l) => l.key === key)).length
+    if (dailyLimit > 0 && (state.counts[`${day}:${key}`] || 0) + pending >= dailyLimit) return { allowed: false, reason: 'dailyLimit' }
+    return { allowed: true }
+  }
+  function reserve(limits) {
+    const unique = [...new Map(limits.map((l) => [l.key, l])).values()]
+    for (const l of unique) {
+      const verdict = check(l.key, l.cooldownSeconds, l.dailyLimit)
+      if (!verdict.allowed) return verdict
     }
+    const id = crypto.randomUUID(), stamp = now(), day = dayAt(stamp)
+    state.holds[id] = { day, limits: unique }
+    for (const l of unique) state.cooldowns[l.key] = { time: stamp, reservation: id }
+    for (const [key, h] of Object.entries(state.holds)) if (h.day !== day) delete state.holds[key]
+    for (const key of Object.keys(state.counts)) if (!key.startsWith(day + ':')) delete state.counts[key]
+    save()
+    return { allowed: true, id }
   }
-  return { allowed: true }
+  function settle(id, consume) {
+    const hold = state.holds[id]
+    if (!hold) return
+    if (consume) for (const l of hold.limits) state.counts[`${hold.day}:${l.key}`] = (state.counts[`${hold.day}:${l.key}`] || 0) + 1
+    else for (const l of hold.limits) if (state.cooldowns[l.key]?.reservation === id) delete state.cooldowns[l.key]
+    delete state.holds[id]
+    save()
+  }
+  return { check, reserve, settle, snapshot: () => structuredClone(state) }
 }
 
+let defaultLimiter
+function limiter() { return defaultLimiter ||= createRateLimiter({ file: dataPath('state', 'rate-limit.json') }) }
+export function reserveRate(limits) { return limiter().reserve(limits) }
+export function settleRate(id, consume) { return limiter().settle(id, consume) }
+export function checkRate(key, cooldownSeconds, dailyLimit) { return limiter().check(key, cooldownSeconds, dailyLimit) }
 export function recordReply(key, dailyLimit) {
-  cooldowns.set(key, Date.now())
-  if (dailyLimit > 0) {
-    const dayKey = `${today()}:${key}`
-    dailyCounts.set(dayKey, (dailyCounts.get(dayKey) || 0) + 1)
-  }
-  // 顺手清理过期的日计数，防止内存缓慢增长
-  if (dailyCounts.size > 2000) {
-    const t = today()
-    for (const k of dailyCounts.keys()) {
-      if (!k.startsWith(t)) dailyCounts.delete(k)
-    }
-  }
+  const held = limiter().reserve([{ key, dailyLimit, cooldownSeconds: 0 }])
+  if (held.allowed) limiter().settle(held.id, true)
 }
