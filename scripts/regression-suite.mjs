@@ -13,6 +13,7 @@ export const REQUIRED_TESTS = Object.freeze([
   'image-compat.test.mjs',
   'delivery-recovery.test.mjs',
   'acceptance-forget-failures.test.mjs', 'skills-forget-retry.test.mjs', 'edge-safety.test.mjs',
+  'installer-paths.test.mjs', 'installed-control.test.mjs',
 ])
 
 /** Only this helper's freshly created temp directory may be removed. */

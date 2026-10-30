@@ -19,6 +19,7 @@
     "files": [
       "main.js",
       "ipc-policy.js",
+      "deployment-paths.cjs",
       "preload.js",
       "renderer/app.js",
       "renderer/index.html",

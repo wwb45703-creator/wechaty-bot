@@ -19,17 +19,21 @@ const path = require('path');
 const os = require('os');
 const { pathToFileURL } = require('node:url');
 const { ALLOWED_CHANNELS, trustedSender } = require('./ipc-policy.js');
+const { resolveDeployment, initializeInstalledData } = require('./deployment-paths.cjs');
 
 // ==================== 路径常量 ====================
-const PROJECT_ROOT = path.resolve(process.env.BOT_PROJECT_ROOT || 'D:\\wechaty-bot');
+const DEPLOYMENT = resolveDeployment({ env: process.env, resourcesPath: process.resourcesPath || '' });
+const PROJECT_ROOT = DEPLOYMENT.projectRoot;
 const ISOLATED_SMOKE = process.env.BOT_UI_SMOKE === '1' || process.argv.includes('--isolated-smoke');
 const DATA_ROOT = ISOLATED_SMOKE
   ? fs.mkdtempSync(path.join(os.tmpdir(), 'wechaty-ui-smoke-'))
-  : path.resolve(process.env.BOT_DATA_ROOT || PROJECT_ROOT);
+  : DEPLOYMENT.dataRoot;
+process.env.BOT_PROJECT_ROOT = PROJECT_ROOT;
+process.env.BOT_OLLAMA_EXE = DEPLOYMENT.ollamaExe;
 process.env.BOT_DATA_ROOT = DATA_ROOT;
 const FLAG_FILE = path.join(DATA_ROOT, 'state', 'bot-disabled.flag');
 const CONFIG_FILE = ISOLATED_SMOKE ? path.join(DATA_ROOT, 'config.json')
-  : path.resolve(process.env.BOT_CONFIG_FILE || path.join(DATA_ROOT, 'config.json'));
+  : DEPLOYMENT.configFile;
 process.env.BOT_CONFIG_FILE = CONFIG_FILE;
 const BOT_LOG = path.join(DATA_ROOT, 'logs', 'bot-console.log');
 if (ISOLATED_SMOKE) {
@@ -37,6 +41,9 @@ if (ISOLATED_SMOKE) {
   process.env.BOT_CONFIG_FILE = CONFIG_FILE;
   fs.writeFileSync(CONFIG_FILE, JSON.stringify({ ai: {}, astrbot: { enabled: false }, personas: { smoke: '隔离测试角色' } }));
   app.setPath('userData', path.join(DATA_ROOT, 'ui-user-data'));
+} else if (DEPLOYMENT.installed) {
+  initializeInstalledData(DEPLOYMENT);
+  app.setPath('userData', path.join(DATA_ROOT, 'controller'));
 }
 const RENDERER_FILE = path.join(__dirname, 'renderer', 'index.html');
 const SCOPED_SOCIAL_CHANNELS = new Set(['getPersonaState', 'getEmotionState', 'getPersonaHistory',
@@ -67,7 +74,7 @@ function registerIpc(channel, handler) {
     try { return await handler(event, ...args); } catch (err) { return { ok: false, error: errMessage(err) }; }
   });
 }
-const OLLAMA_EXE = 'D:\\Ollama\\ollama.exe';                         // Ollama 可执行文件
+const OLLAMA_EXE = DEPLOYMENT.ollamaExe;
 const OLLAMA_API = 'http://127.0.0.1:11434';                         // Ollama API 地址
 
 // CREATE_NO_WINDOW：从系统层面禁止为子进程创建控制台窗口（windowsHide 偶有闪现，此标志根治）
@@ -192,6 +199,7 @@ function startStatusPolling() {
  * 由 supervisor（.NET CreateNoWindow）拉起机器人 + Ollama。1 分钟内上线。
  */
 async function doStartBot() {
+  if (DEPLOYMENT.installed) return runInstalledControl('start');
   // 步骤 1：清掉停用标记
   if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
 
@@ -226,6 +234,7 @@ async function doStartBot() {
  * 返回 {ok:true} 或 {ok:false, error}
  */
 async function doStopBot() {
+  if (DEPLOYMENT.installed) return runInstalledControl('stop');
   // 步骤 1：先落盘停用标记（看门狗不会拉起）
   fs.mkdirSync(path.dirname(FLAG_FILE), { recursive: true });
   fs.writeFileSync(FLAG_FILE, '');
@@ -237,6 +246,21 @@ async function doStopBot() {
     try { fs.unlinkSync(BOT_PID_FILE); } catch (err) { /* 忽略 */ }
   }
   return { ok: true };
+}
+
+function runInstalledControl(action) {
+  return new Promise((resolve) => {
+    const child = spawn('wscript.exe', [path.join(PROJECT_ROOT, 'scripts', 'installed-launcher.vbs'), action], {
+      windowsHide: true, creationFlags: CREATE_NO_WINDOW, stdio: 'ignore',
+    });
+    child.once('error', (error) => resolve({ ok: false, error: errMessage(error) }));
+    child.once('exit', (code) => {
+      if (code === 0) return resolve({ ok: true });
+      let detail = '';
+      try { detail = fs.readFileSync(path.join(DATA_ROOT, 'logs', 'installed-control.log'), 'utf8').trim().split(/\r?\n/).at(-1); } catch {}
+      resolve({ ok: false, error: detail || '启动控制失败，请确认微信 3.9.10.27 已安装并登录。' });
+    });
+  });
 }
 
 // ==================== IPC Handlers ====================
@@ -419,7 +443,7 @@ registerIpc('importModel', async (_event, payload) => {
 
     // 4) Ollama 环境检查
     if (!fs.existsSync(OLLAMA_EXE)) {
-      return { ok: false, error: '未找到 Ollama：D:\\Ollama\\ollama.exe' };
+      return { ok: false, error: '未找到 Ollama：' + OLLAMA_EXE };
     }
     let serverOk = false;
     try {
@@ -534,6 +558,7 @@ registerIpc('getLogs', async (_event, lines) => {
  */
 registerIpc('startOllama', async () => {
   try {
+    if (DEPLOYMENT.installed) return await runInstalledControl('start-ollama');
     // 清除独立停用标记（看门狗恢复对 Ollama 的守护）
     const ollamaFlag = path.join(DATA_ROOT, 'state', 'ollama-disabled.flag');
     if (fs.existsSync(ollamaFlag)) fs.unlinkSync(ollamaFlag);
@@ -587,7 +612,7 @@ registerIpc('testChat', async (_event, request) => {
 // ==================== 开机自启（Startup 目录 vbs，纯文件操作零闪窗） ====================
 
 const STARTUP_DIR = path.join(process.env.APPDATA || '', 'Microsoft\\Windows\\Start Menu\\Programs\\Startup');
-const AUTOSTART_VBS = path.join(STARTUP_DIR, 'wechaty-bot-autostart.vbs');
+const AUTOSTART_VBS = path.join(STARTUP_DIR, DEPLOYMENT.installed ? 'wechaty-bot-installed-autostart.vbs' : 'wechaty-bot-autostart.vbs');
 const AUTOSTART_VBS_CONTENT =
   "' Wechaty bot autostart: hidden watchdog round (starts bot + ollama)\r\n" +
   'CreateObject("WScript.Shell").Run "wscript.exe ""' + path.join(PROJECT_ROOT, 'scripts', 'watchdog-launcher.vbs') + '""", 0, False';
@@ -598,6 +623,7 @@ registerIpc('getAutostart', async () => {
 
 registerIpc('setAutostart', async (_event, enable) => {
   try {
+    if (DEPLOYMENT.installed && enable) return { ok: false, error: '安装版默认手动启动，未注册系统自启；请使用开始菜单快捷方式。' };
     if (enable) {
       fs.mkdirSync(STARTUP_DIR, { recursive: true });
       fs.writeFileSync(AUTOSTART_VBS, AUTOSTART_VBS_CONTENT, 'utf8');
@@ -655,6 +681,7 @@ registerIpc('deleteRelationship', async (_event, request) => forgetSocialRequest
 // 注意：关闭后机器人将无法生成回复（视觉/文本都依赖 Ollama）。
 registerIpc('stopOllama', async () => {
   try {
+    if (DEPLOYMENT.installed) return await runInstalledControl('stop-ollama');
     const ollamaFlag = path.join(DATA_ROOT, 'state', 'ollama-disabled.flag');
     fs.mkdirSync(path.dirname(ollamaFlag), { recursive: true });
     fs.writeFileSync(ollamaFlag, '');
@@ -868,6 +895,7 @@ app.whenReady().then(() => {
   if (ISOLATED_SMOKE && (process.env.BOT_UI_SMOKE_REPORT || process.env.BOT_UI_SMOKE_SCREENSHOT)) {
     win.webContents.once('did-finish-load', async () => {
       const report = { isolated: true, dataRoot: DATA_ROOT, failures: [] };
+      report.deployment = { installed: DEPLOYMENT.installed, projectRoot: PROJECT_ROOT, bundledOllama: OLLAMA_EXE };
       try {
         report.status = await win.webContents.executeJavaScript('window.botctl.getStatus()');
         report.skills = await win.webContents.executeJavaScript('window.botctl.listSkillReviews()');

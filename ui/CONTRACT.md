@@ -7,6 +7,10 @@
 - `BOT_PROJECT_ROOT`：外部项目目录，默认 `D:\wechaty-bot`。
 - `BOT_DATA_ROOT`：配置、社交状态、审核记录等运行数据，默认项目目录。
 - `BOT_CONFIG_FILE`：配置文件的显式路径；仅在正常模式采用。
+
+安装分发包通过 `resources/bot-runtime/distribution.json` 识别。默认项目根为该运行目录，用户配置、记忆、状态和模型放 `%LOCALAPPDATA%\WechatyBotConsole\data`，不写入程序安装目录。初次复制示例配置并创建停用标记；后续运行不会覆盖用户配置或重建已手动取消的停用标记。未带该标记的现有目录版仍使用原路径默认值。
+
+安装版启动控制由 `installed-launcher.vbs → installed-control.ps1` 完成，使用随包 Node 18、Ollama 和精确进程所有权，拒绝不兼容的微信版本，不注册自启。停止模型仅影响本安装启动且仍有所有权证明的服务；复用的共享服务保持运行。
 - 业务模块优先加载完整外部源码（包含 social/review/runtime-paths），否则统一加载随包附带的 `resources/bot-runtime/src`；避免新旧模块混用。
 - 关闭控制台不会停止后台机器人。启停使用现有 PID / VBS 机制，不生成控制台窗口。
 
