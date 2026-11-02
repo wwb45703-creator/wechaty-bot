@@ -15,6 +15,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('botctl', {
   // 获取一次当前状态快照（与 'status' 推送的结构相同）
   getStatus: (...args) => ipcRenderer.invoke('getStatus', ...args),
+  getRuntimeInfo: () => ipcRenderer.invoke('getRuntimeInfo'),
 
   // 启动 bot → {ok:true, pid} | {ok:false, error}
   startBot: (...args) => ipcRenderer.invoke('startBot', ...args),
@@ -93,6 +94,18 @@ contextBridge.exposeInMainWorld('botctl', {
   astrbotGetKnowledgeBases: (...args) => ipcRenderer.invoke('astrbot:kb:list', ...args),
   astrbotQueryKnowledgeBase: (...args) => ipcRenderer.invoke('astrbot:kb:query', ...args),
   astrbotToggleService: (...args) => ipcRenderer.invoke('astrbot:service:toggle', ...args),
+  astrbotGetConnection: () => ipcRenderer.invoke('astrbot:connection:get'),
+  astrbotSaveConnection: (request) => ipcRenderer.invoke('astrbot:connection:save', request),
+  astrbotUninstallPlugin: (request) => ipcRenderer.invoke('astrbot:plugins:uninstall', request),
+  listKnowledgeBases: () => ipcRenderer.invoke('knowledge:list'),
+  createKnowledgeBase: (request) => ipcRenderer.invoke('knowledge:create', request),
+  updateKnowledgeBase: (request) => ipcRenderer.invoke('knowledge:update', request),
+  deleteKnowledgeBase: (request) => ipcRenderer.invoke('knowledge:delete', request),
+  listKnowledgeDocuments: (request) => ipcRenderer.invoke('knowledge:documents', request),
+  importKnowledgeDocument: (request) => ipcRenderer.invoke('knowledge:import', request),
+  pickKnowledgeDocument: (request) => ipcRenderer.invoke('knowledge:pick-document', request),
+  deleteKnowledgeDocument: (request) => ipcRenderer.invoke('knowledge:delete-document', request),
+  queryKnowledgeBase: (request) => ipcRenderer.invoke('knowledge:query', request),
 
   /**
    * 订阅主进程每 3 秒推送的状态（通道 'status'）。

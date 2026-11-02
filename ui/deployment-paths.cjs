@@ -32,4 +32,15 @@ function initializeInstalledData(deployment) {
   } catch (error) { if (error.code !== 'EEXIST') throw error; }
 }
 
-module.exports = { resolveDeployment, initializeInstalledData };
+function buildAutostartScript(deployment) {
+  const literal = value => '"' + String(value).replace(/"/g, '""').replace(/[\r\n]/g, '') + '"';
+  const lines = ["' User-enabled Wechaty autostart. No scheduled task is registered.", 'Option Explicit', 'Dim shell, env', 'Set shell = CreateObject("WScript.Shell")'];
+  if (deployment.installed) {
+    lines.push('Set env = shell.Environment("Process")');
+    for (const [key, value] of Object.entries({ BOT_PROJECT_ROOT: deployment.projectRoot, BOT_DATA_ROOT: deployment.dataRoot, BOT_CONFIG_FILE: deployment.configFile, BOT_OLLAMA_EXE: deployment.ollamaExe })) lines.push(`env(${literal(key)}) = ${literal(value)}`);
+  }
+  const script = path.join(deployment.projectRoot, 'scripts', deployment.installed ? 'installed-launcher.vbs' : 'watchdog-launcher.vbs');
+  lines.push('shell.Run ' + literal('wscript.exe "' + script + '"' + (deployment.installed ? ' start' : '')) + ', 0, False');
+  return lines.join('\r\n') + '\r\n';
+}
+module.exports = { resolveDeployment, initializeInstalledData, buildAutostartScript };

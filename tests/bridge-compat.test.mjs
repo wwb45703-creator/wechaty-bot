@@ -53,7 +53,7 @@ test('disabled bridge and offline failures return explicit failure without invok
   assert.equal((await bridge.chatWithAstrBot({ message: 'plugin command' })).ok, false)
   assert.equal(requests, 0)
   config.astrbot.enabled = true
-  assert.deepEqual(await bridge.listInstalledPlugins(), [])
+  await assert.rejects(bridge.listInstalledPlugins(), /offline fixture/)
   assert.equal((await bridge.chatWithAstrBot({ message: 'plugin command' })).ok, false)
   assert.equal((await bridge.togglePlugin({ name: '', enabled: true })).ok, false)
 })

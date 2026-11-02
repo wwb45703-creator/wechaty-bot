@@ -1,0 +1,95 @@
+{
+  "isolated": true,
+  "productionDataTouched": false,
+  "wechatConnected": false,
+  "cloudModelConfigured": false,
+  "checks": [
+    {
+      "name": "isolated AstrBot starts on a private loopback port",
+      "passed": true
+    },
+    {
+      "name": "plugin API rejects a missing API Key",
+      "passed": true,
+      "detail": {
+        "http": 401
+      }
+    },
+    {
+      "name": "authenticated plugin list returns actual built-in plugins",
+      "passed": true,
+      "detail": {
+        "count": 2
+      }
+    },
+    {
+      "name": "knowledge list uses data.items",
+      "passed": true
+    },
+    {
+      "name": "external RAG rejects creation without an embedding provider",
+      "passed": true,
+      "detail": {
+        "message": "缺少参数 embedding_provider_id"
+      }
+    },
+    {
+      "name": "trusted local ZIP installs through the actual plugin manager",
+      "passed": true,
+      "detail": {
+        "message": "安装成功。"
+      }
+    },
+    {
+      "name": "installed fixture appears in actual persisted plugin list",
+      "passed": true
+    },
+    {
+      "name": "production Node bridge calls the actual isolated plugin and knowledge APIs",
+      "passed": true,
+      "detail": {
+        "alive": true,
+        "plugin": true,
+        "reply": "console-fixture-pong",
+        "replyOk": true,
+        "kbOk": true
+      }
+    },
+    {
+      "name": "actual plugin activation persists enabled=False",
+      "passed": true
+    },
+    {
+      "name": "actual plugin activation persists enabled=True",
+      "passed": true
+    },
+    {
+      "name": "actual chat SSE executes the installed fixture without a model",
+      "passed": true,
+      "detail": {
+        "http": 200,
+        "sseTypes": [
+          "\"session_id\"",
+          "\"user_message_saved\"",
+          "\"plain\"",
+          "\"message_saved\"",
+          "\"end\""
+        ]
+      }
+    },
+    {
+      "name": "actual plugin uninstall removes the fixture",
+      "passed": true
+    }
+  ],
+  "failures": [],
+  "astrbotVersion": "4.29.3",
+  "port": 10880,
+  "limits": [
+    "GitHub repository downloading is a separate network operation; this run verifies a trusted local ZIP through the same plugin manager.",
+    "No embedding provider or cloud credentials were configured; external AstrBot RAG requires one.",
+    "No WeChat session, production configuration, or production API Key was used."
+  ],
+  "ownedProcessStopped": true,
+  "temporaryDataRemoved": true
+}

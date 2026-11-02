@@ -46,6 +46,7 @@ if (!required.length) {
 record('Reply cleaning compatibility', runIsolatedScript('test-clean-reply.mjs') === 0)
 record('Room trigger compatibility', runIsolatedScript('test-room-trigger.mjs') === 0)
 record('Controller IPC and no-side-effects smoke', runIsolatedScript('test-ui-social-ipc.mjs', ['--experimental-vm-modules']) === 0)
+record('Product knowledge and connection IPC', runIsolatedScript('test-ui-product-ipc.mjs', ['--experimental-vm-modules']) === 0)
 console.log(`\nOffline verification: ${passed} gates passed, ${failed} failed.`)
 console.log('Live WeChat/Frida/Ollama/third-party service behavior and packaged GUI are separate checks; they were not run by this gate.')
 process.exitCode = failed ? 1 : 0

@@ -1,9 +1,12 @@
 const { pathToFileURL } = require('node:url');
 
 const ALLOWED_CHANNELS = new Set([
+  'getRuntimeInfo',
   'getStatus', 'startBot', 'stopBot', 'getModels', 'setCurrentModel', 'getLoadedModels', 'loadModel', 'unloadModel', 'importModel', 'getLogs', 'startOllama', 'stopOllama', 'testChat', 'getAutostart', 'setAutostart', 'listMemories', 'deleteMemory', 'getMemoryDetail', 'getPersonaState', 'getEmotionState', 'getPersonaHistory', 'listRelationships', 'getRelationship', 'deleteRelationship', 'pickGgufFile',
   'astrbot:status', 'astrbot:plugins:list', 'astrbot:plugins:market', 'astrbot:plugins:toggle', 'astrbot:plugins:install', 'astrbot:kb:list', 'astrbot:kb:query', 'astrbot:service:toggle',
   'skills:list', 'skills:detail', 'skills:propose', 'skills:evaluate', 'skills:activate', 'skills:reject', 'skills:rollback', 'skills:deactivate', 'social:list', 'social:detail', 'social:forget',
+  'astrbot:connection:get', 'astrbot:connection:save', 'astrbot:plugins:uninstall',
+  'knowledge:list', 'knowledge:create', 'knowledge:update', 'knowledge:delete', 'knowledge:documents', 'knowledge:import', 'knowledge:pick-document', 'knowledge:delete-document', 'knowledge:query',
 ]);
 function trustedSender(event, windows, rendererPath) {
   if (!event?.sender || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) return false;

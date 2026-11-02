@@ -1,6 +1,7 @@
 const path = require('node:path');
+const { version } = require('./package.json');
 
-const output = path.resolve(process.env.BOT_INSTALLER_OUTPUT || 'E:\\微信机器人安装包\\2026-10-30');
+const output = path.resolve(process.env.BOT_INSTALLER_OUTPUT || 'E:\\微信机器人安装包\\2026-11-02');
 const resources = path.resolve(process.env.BOT_INSTALLER_STAGE || path.join(output, '.stage', 'resources'));
 
 module.exports = {
@@ -8,7 +9,7 @@ module.exports = {
   appId: 'com.wwb.wechaty-bot-console',
   productName: '微信机器人控制台',
   extraMetadata: {
-    version: '1.2.0',
+    version,
     description: '微信群聊社交成长机器人本地控制台',
     author: 'Wechaty Bot Project',
   },
@@ -18,7 +19,7 @@ module.exports = {
   npmRebuild: false,
   files: [
     'main.js', 'ipc-policy.js', 'preload.js', 'deployment-paths.cjs',
-    'renderer/app.js', 'renderer/index.html', 'renderer/style.css',
+    'renderer/app.js', 'renderer/scoped-views.js', 'renderer/index.html', 'renderer/style.css',
   ],
   extraResources: [
     { from: path.join(resources, 'bot-runtime'), to: 'bot-runtime', filter: ['**/*', '!**/.mimosa/**', '!**/.git/**'] },
@@ -36,7 +37,7 @@ module.exports = {
     deleteAppDataOnUninstall: false,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    shortcutName: '微信机器人控制台 1.2',
+    shortcutName: '微信机器人控制台 1.3',
     unicode: true,
     installerLanguages: ['zh_CN'],
     differentialPackage: false,

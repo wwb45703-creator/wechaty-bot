@@ -26,7 +26,9 @@ function fixture(run) {
   const cleanup = () => {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()))
     assert.ok(path.basename(root).startsWith('wechaty-installed-control-'))
-    fs.rmSync(root, { recursive: true, force: true })
+    // Windows can briefly retain the executable image after the child exit event.
+    // Retry only removal of this verified fixture, never the behavior assertions.
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
   let result
   try { result = run({ root, install, data, env, invoke, put, prepare }) }
@@ -124,9 +126,9 @@ test('stop reports an unowned runtime as an error and preserves evidence instead
     assert.equal(fs.existsSync(path.join(f.data, 'state', 'bot-disabled.flag')), true)
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
-      const exited = once(child, 'exit')
+      const closed = once(child, 'close')
       child.kill('SIGKILL')
-      await exited
+      await closed
     }
   }
 }))

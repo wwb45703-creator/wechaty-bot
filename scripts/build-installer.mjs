@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const { version } = JSON.parse(fs.readFileSync(path.join(project, 'ui', 'package.json'), 'utf8'))
 const args = process.argv.slice(2)
 function option(name, fallback) {
   const index = args.indexOf(name)
@@ -18,7 +19,7 @@ for (let i = 0; i < args.length; i++) {
   if (!known.has(args[i])) throw new Error(`Unknown option: ${args[i]}`)
   if (['--out', '--runtime-source', '--ollama-source'].includes(args[i])) i++
 }
-const output = path.resolve(option('--out', process.env.BOT_INSTALLER_OUTPUT || 'E:\\微信机器人安装包\\2026-10-30'))
+const output = path.resolve(option('--out', process.env.BOT_INSTALLER_OUTPUT || 'E:\\微信机器人安装包\\2026-11-02'))
 const runtimeSource = path.resolve(option('--runtime-source', 'D:\\wechaty-bot'))
 const ollamaSource = path.resolve(option('--ollama-source', 'D:\\Ollama'))
 if (process.platform !== 'win32') throw new Error('This release requires Windows x64 and its installed native dependencies')
@@ -124,7 +125,8 @@ function stageOllamaLicense() {
 }
 function assertPayload() {
   const required = [
-    'src/index.js', 'src/social/index.js', 'src/skills/review-store.js', 'package.json',
+    'src/index.js', 'src/social/index.js', 'src/skills/review-store.js',
+    'src/knowledge/store.js', 'src/reach/astrbot-connection.js', 'src/reach/astrbot-client.js', 'package.json',
     'config.defaults.json', 'distribution.json', 'runtime/node18/node.exe', 'runtime/node18/LICENSE',
     'runtime/ollama/ollama.exe', 'runtime/ollama/LICENSE', 'runtime/ollama/lib/ollama/LLAMA_CPP_LICENSE',
     'node_modules/frida/build/Release/frida_binding.node',
@@ -142,7 +144,9 @@ function assertPayload() {
 }
 
 async function ensureNsisTool(cache, name, version, expected) {
-  const target = path.join(cache, name, `${name}-${version}`)
+  // app-builder groups artifacts by the first hyphen-delimited component:
+  // both nsis-3.x and nsis-resources-3.x live in the nsis cache directory.
+  const target = path.join(cache, name.split('-')[0], `${name}-${version}`)
   if (fs.existsSync(target) && fs.readdirSync(target).length) return
   const tag = `${name}-${version}`, assetName = `${tag}.7z`
   const archive = path.join(cache, assetName)
@@ -201,7 +205,7 @@ if (!args.includes('--reuse-stage')) {
   defaults.reach ||= {}; defaults.reach.search = { ...(defaults.reach.search || {}), implicit: false }
   writeJson(path.join(payload, 'config.defaults.json'), defaults)
   writeJson(path.join(payload, 'distribution.json'), {
-    format: 1, kind: 'wechaty-bot-offline', version: '1.2.0', architecture: 'x64',
+    format: 1, kind: 'wechaty-bot-offline', version, architecture: 'x64',
     node: '18.20.8', wechat: '3.9.10.27', puppetXp: getVersion(path.join(runtimeSource, 'node_modules', 'wechaty-puppet-xp', 'package.json')),
     modelsIncluded: false, ollamaBackends: ['cpu', 'cuda_v12', 'cuda_v13'],
     licenses: { ollama: ollamaLicense },
@@ -211,7 +215,7 @@ if (!args.includes('--reuse-stage')) {
   const files = await hashFiles(listFiles(resources), resources)
   const important = files.filter(row => /(?:\.node$|\/node\.exe$|\/ollama\.exe$|\/init-agent-script\.js$|WeChatSetup-|distribution\.json$|config\.defaults\.json$)/.test(row.path))
   if (sourceFingerprint() !== fingerprintAtStart) throw new Error('Runtime source changed during staging; rerun stage after editing completes')
-  writeJson(manifestFile, { format: 1, version: '1.2.0', generatedAt: new Date().toISOString(), sourceFingerprint: fingerprintAtStart, fileCount: files.length, bytes: files.reduce((sum, row) => sum + row.bytes, 0), hashes: important, files })
+  writeJson(manifestFile, { format: 1, version, generatedAt: new Date().toISOString(), sourceFingerprint: fingerprintAtStart, fileCount: files.length, bytes: files.reduce((sum, row) => sum + row.bytes, 0), hashes: important, files })
   console.log(JSON.stringify({ staged: true, fileCount: files.length, copiedFiles: filesCopied, bytes: bytesCopied, manifest: manifestFile }, null, 2))
 } else {
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'))
@@ -240,7 +244,7 @@ run(buildNode, [path.join(project, 'ui', 'node_modules', 'electron-builder', 'cl
     ELECTRON_BUILDER_COMPRESSION_LEVEL: process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL || '3', TEMP: temp, TMP: temp },
 })
 const buildDir = path.join(output, 'build')
-const installers = fs.readdirSync(buildDir).filter(name => /^WechatyBotConsole-Setup-1\.2\.0-x64\.exe$/.test(name))
+const installers = fs.readdirSync(buildDir).filter(name => name === `WechatyBotConsole-Setup-${version}-x64.exe`)
 if (installers.length !== 1) throw new Error('Expected exactly one offline installer')
 for (const name of installers) {
   const source = path.join(buildDir, name), target = path.join(output, name)

@@ -10,22 +10,36 @@
  *  3. 安全降级容错：AstrBot 未启动或响应超时时平滑降级，绝不影响原本的微信闲聊与记忆功能。
  */
 
-import config from '../config-loader.js'
 import { logger } from '../logger.js'
 import { validateExternalUrl } from '../url-utils.js'
+import { readAstrBotConnection } from './astrbot-connection.js'
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:6185'
 
 /** 获取 AstrBot 配置 */
 export function getAstrBotConfig() {
-  const ac = config.astrbot ?? {}
-  return {
-    enabled: ac.enabled ?? true,
-    baseUrl: (ac.baseUrl || process.env.ASTRBOT_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
-    apiKey: ac.apiKey || process.env.ASTRBOT_API_KEY || '',
-    timeoutMs: ac.timeoutMs ?? 30000,
-    passThroughCommands: ac.passThroughCommands ?? true,
-  }
+  const value = readAstrBotConnection()
+  return { ...value, baseUrl: value.baseUrl.replace(/\/+$/, '') }
+}
+
+function assertEnabled(cfg) { if (!cfg.enabled) throw new Error('AstrBot 桥接未启用，请在插件中心启用连接') }
+function apiError(res, data) {
+  if (res.status === 401 || res.status === 403) return 'AstrBot 认证失败，请配置具有 plugin / kb 权限的 API Key'
+  return String(data?.message || data?.detail || `AstrBot HTTP ${res.status} / 响应格式无效`).slice(0, 500)
+}
+async function requestJson(endpoint, { method = 'GET', body, timeoutMs } = {}) {
+  const cfg = getAstrBotConfig(); assertEnabled(cfg)
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs || cfg.timeoutMs || 10000)
+  try {
+    const res = await fetch(`${cfg.baseUrl}/api/v1${endpoint}`, { method, headers: {
+      Authorization: `ApiKey ${cfg.apiKey}`, 'Accept-Language': 'zh-CN', ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+    }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal })
+    const data = await res.json().catch(() => null)
+    if (!res.ok || data?.status !== 'ok') throw Object.assign(new Error(apiError(res, data)), { reachable: true })
+    return data
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('AstrBot 请求超时，请检查插件服务')
+    throw error
+  } finally { clearTimeout(timer) }
 }
 
 /** 探活检测：AstrBot 服务端是否健康在线 */
@@ -44,7 +58,9 @@ export async function isAstrBotAlive(timeoutMs = 1500) {
       },
       signal: controller.signal,
     })
-    return res.status === 200
+    if (!res.ok) return false
+    const data = await res.json().catch(() => null)
+    return data?.status === 'ok' && Array.isArray(data.data)
   } catch {
     return false
   } finally {
@@ -141,31 +157,15 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
 
 /** 查询 AstrBot 当前已安装插件 */
 export async function listInstalledPlugins() {
-  const cfg = getAstrBotConfig()
-  try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/plugins`, {
-      headers: { Authorization: `ApiKey ${cfg.apiKey}` },
-    })
-    const data = await res.json()
-    if (data.status === 'ok' && Array.isArray(data.data)) {
-      return data.data
-    }
-    return []
-  } catch (e) {
-    logger.warn(`[AstrBot] 查询已安装插件失败: ${e.message}`)
-    return []
-  }
+  const data = await requestJson('/plugins')
+  if (!Array.isArray(data.data)) throw new Error('AstrBot 插件列表格式不正确')
+  return data.data
 }
 
 /** 检索 AstrBot 官方插件市场 (2800+ 插件) */
 export async function searchMarketPlugins(keyword = '', limit = 10) {
-  const cfg = getAstrBotConfig()
-  try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/plugins/market`, {
-      headers: { Authorization: `ApiKey ${cfg.apiKey}` },
-    })
-    const data = await res.json()
-    if (data.status !== 'ok' || !data.data) return []
+    const data = await requestJson('/plugins/market')
+    if (!data.data || typeof data.data !== 'object') throw new Error('AstrBot 市场响应格式不正确')
 
     const results = []
     const kw = keyword.toLowerCase().trim()
@@ -189,15 +189,11 @@ export async function searchMarketPlugins(keyword = '', limit = 10) {
       }
     }
     return results
-  } catch (e) {
-    logger.warn(`[AstrBot] 检索插件市场失败: ${e.message}`)
-    return []
-  }
 }
 
 /** 安装 GitHub / Git 插件 */
 export async function installPlugin(repoUrl) {
-  const cfg = getAstrBotConfig()
+  if (!getAstrBotConfig().enabled) return { status: 'error', ok: false, message: 'AstrBot 桥接未启用' }
   const cleanUrl = String(repoUrl || '').trim()
   if (!cleanUrl) {
     return { status: 'error', message: '插件仓库地址不能为空' }
@@ -209,16 +205,8 @@ export async function installPlugin(repoUrl) {
   }
 
   try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/plugins/install/github`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `ApiKey ${cfg.apiKey}`,
-      },
-      body: JSON.stringify({ url: cleanUrl }),
-      signal: AbortSignal.timeout(cfg.timeoutMs || 30000),
-    })
-    return await res.json()
+    const data = await requestJson('/plugins/install/github', { method: 'POST', body: { url: cleanUrl }, timeoutMs: 120000 })
+    return { ...data, ok: true }
   } catch (e) {
     logger.error(`[AstrBot] 安装插件异常: ${e.message}`)
     return { status: 'error', message: e.message }
@@ -227,24 +215,15 @@ export async function installPlugin(repoUrl) {
 
 /** 切换插件启用/禁用状态 */
 export async function togglePlugin({ name, enabled }) {
-  const cfg = getAstrBotConfig()
   const cleanName = String(name || '').trim()
   if (!cleanName) {
     return { ok: false, error: '插件名称不能为空' }
   }
 
   try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/plugins/${encodeURIComponent(cleanName)}/enabled`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `ApiKey ${cfg.apiKey}`,
-      },
-      body: JSON.stringify({ enabled: Boolean(enabled) }),
-      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
-    })
-    const data = await res.json().catch(() => ({}))
-    return { ok: res.ok, data }
+    if (typeof enabled !== 'boolean') throw new Error('插件启用状态必须为布尔值')
+    const data = await requestJson(`/plugins/${encodeURIComponent(cleanName)}/enabled`, { method: 'PATCH', body: { enabled } })
+    return { ok: true, data: data.data }
   } catch (e) {
     logger.error(`[AstrBot] 切换插件状态异常: ${e.message}`)
     return { ok: false, error: e.message }
@@ -253,17 +232,10 @@ export async function togglePlugin({ name, enabled }) {
 
 /** 查询知识库列表 */
 export async function listKnowledgeBases() {
-  const cfg = getAstrBotConfig()
   try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/knowledge-bases`, {
-      headers: { Authorization: `ApiKey ${cfg.apiKey}` },
-      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (data.status === 'ok' && data.data) {
-      return { ok: true, data: data.data.items || [] }
-    }
-    return { ok: true, data: [] }
+    const data = await requestJson('/knowledge-bases')
+    if (!Array.isArray(data.data?.items)) throw new Error('AstrBot 知识库列表格式不正确')
+    return { ok: true, data: data.data.items.map(item => ({ ...item, id: item.kb_id || item.id, name: item.kb_name || item.name, documents_count: item.doc_count ?? item.documents_count ?? 0, chunks_count: item.chunk_count ?? item.chunks_count ?? 0 })) }
   } catch (e) {
     logger.warn(`[AstrBot] 查询知识库列表失败: ${e.message}`)
     return { ok: false, error: e.message, data: [] }
@@ -271,32 +243,27 @@ export async function listKnowledgeBases() {
 }
 
 /** 在指定知识库中检索知识切片 */
-export async function queryKnowledgeBase({ kbId, query, topK = 3 }) {
-  const cfg = getAstrBotConfig()
+export async function queryKnowledgeBase({ kbId, kbName, query, topK = 3 }) {
   const cleanKbId = String(kbId || '').trim()
   if (!cleanKbId) {
     return { ok: false, error: '知识库 ID 不能为空' }
   }
   const cleanTopK = Math.max(1, Math.min(20, parseInt(topK, 10) || 3))
+  if (!String(query || '').trim()) return { ok: false, error: '检索问题不能为空' }
 
   try {
-    const res = await fetch(`${cfg.baseUrl}/api/v1/knowledge-bases/${encodeURIComponent(cleanKbId)}/retrieve`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `ApiKey ${cfg.apiKey}`,
-      },
-      body: JSON.stringify({
-        query: String(query || '').slice(0, 1000),
-        top_k: cleanTopK,
-      }),
-      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (data.status === 'ok' && Array.isArray(data.data)) {
-      return { ok: true, chunks: data.data }
+    let selectedName = String(kbName || '').trim()
+    if (!selectedName) {
+      const bases = await listKnowledgeBases()
+      if (!bases.ok) throw new Error(bases.error)
+      selectedName = bases.data.find(item => item.id === cleanKbId)?.name || cleanKbId
     }
-    return { ok: false, error: data.message || '检索知识库失败' }
+    const data = await requestJson(`/knowledge-bases/${encodeURIComponent(cleanKbId)}/retrieve`, { method: 'POST', body: {
+      query: String(query).trim().slice(0, 1000), top_k: cleanTopK, kb_names: [selectedName]
+    } })
+    const chunks = Array.isArray(data.data) ? data.data : data.data?.results
+    if (!Array.isArray(chunks)) throw new Error('AstrBot 检索结果格式不正确')
+    return { ok: true, chunks }
   } catch (e) {
     logger.warn(`[AstrBot] 检索知识库失败: ${e.message}`)
     return { ok: false, error: e.message }
@@ -306,27 +273,27 @@ export async function queryKnowledgeBase({ kbId, query, topK = 3 }) {
 /** 获取 AstrBot 全局运行状态与统计 */
 export async function getAstrBotStatus() {
   const cfg = getAstrBotConfig()
-  const alive = await isAstrBotAlive(2000)
-  if (!alive) {
+  let plugins
+  try { plugins = (await requestJson('/plugins', { timeoutMs: 2000 })).data; if (!Array.isArray(plugins)) throw new Error('插件列表格式不正确') }
+  catch (error) {
     return {
       alive: false,
       baseUrl: cfg.baseUrl,
       enabled: cfg.enabled,
+      error: error.message,
+      reachable: error.reachable === true,
       pluginCount: 0,
       kbCount: 0,
     }
   }
 
-  const [plugins, kbs] = await Promise.all([
-    listInstalledPlugins(),
-    listKnowledgeBases(),
-  ])
+  const kbs = await listKnowledgeBases()
 
   return {
     alive: true,
+    reachable: true,
     baseUrl: cfg.baseUrl,
     enabled: cfg.enabled,
-    version: '4.29.3',
     pluginCount: plugins.length,
     plugins: plugins.map((p) => ({
       name: p.name,
@@ -339,5 +306,15 @@ export async function getAstrBotStatus() {
     })),
     kbCount: kbs.data?.length || 0,
     knowledgeBases: kbs.data || [],
+    knowledgeError: kbs.error,
   }
+}
+
+export async function uninstallPlugin({ name, confirmed } = {}) {
+  try {
+    if (confirmed !== true) throw new Error('请先确认卸载插件')
+    if (typeof name !== 'string' || !name.trim()) throw new Error('插件名称不能为空')
+    const data = await requestJson(`/plugins/${encodeURIComponent(name.trim())}`, { method: 'DELETE' })
+    return { ok: true, data: data.data }
+  } catch (error) { return { ok: false, error: error.message } }
 }

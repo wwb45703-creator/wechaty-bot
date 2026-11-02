@@ -5,6 +5,8 @@ import { handlePersonaCommand } from '../persona-commands.js'
 import { getRoomDirectives, clearRoomDirectives, parsePreference } from '../personality/room-directives.js'
 import { detectImplicitSearchIntent } from './search.js'
 import { webSearch } from '../reach/search.js'
+import { answerKnowledgeCommand } from '../knowledge/store.js'
+import { readAstrBotConnection } from '../reach/astrbot-connection.js'
 
 export function isForgetCommand(text) { return /^\/?忘记我(?:全部会话|所有会话)?$/.test(String(text || '').trim()) }
 export function isAllForget(text) { return /(?:全部|所有)会话$/.test(String(text || '').trim()) }
@@ -13,6 +15,8 @@ export async function produceTextResponse(ctx, question) {
   if (isForgetCommand(question)) return { text: isAllForget(question) ? '已删除所有会话中与你有关的成长和记忆记录' : '已删除本会话所有角色中与你有关的成长和记忆记录', learn: false }
   if (config.dingDong && question.toLowerCase() === 'ding') return { text: 'dong', learn: false }
   if (config.menu?.enabled && question === config.menu?.keyword) return { text: config.menu?.content || '', learn: false }
+  const knowledgeReply = answerKnowledgeCommand(question)
+  if (knowledgeReply !== null) return { text: knowledgeReply, learn: false }
   if (question === '我的记忆') {
     const memory = getMemory(scope)
     const lines = [...(memory.facts || []).slice(-12).map((f) => `- ${f.text}`), ...(memory.episodes || []).slice(-5).map((e) => `- ${e.description}`)]
@@ -34,14 +38,18 @@ export async function produceTextResponse(ctx, question) {
   }
   const preference = parsePreference(question)
   // An explicit bridge is opt-in. It never receives ordinary social conversation.
-  if (config.astrbot?.enabled === true && /^\/?(?:astrbot|插件)\s+/i.test(question)) {
+  const explicitPlugin = /^\/?(?:astrbot|插件)(?:\s+([\s\S]*))?$/i.exec(question.trim())
+  if (explicitPlugin) {
+    if (readAstrBotConnection().enabled !== true) return { text: 'AstrBot 插件连接未启用，请在控制台插件中心启用连接。', learn: false }
+    const command = String(explicitPlugin[1] || '').trim()
+    if (!command) return { text: '用法：/插件 列表，或 /插件 /插件指令。', learn: false }
     const client = await import('../reach/astrbot-client.js')
     if (await client.isAstrBotAlive()) {
-      if (/^(?:\/?astrbot|插件)\s*(?:列表|list)$/i.test(question)) {
+      if (/^(?:列表|list)$/i.test(command)) {
         const plugins = await client.listInstalledPlugins()
         return { text: plugins.map((p) => `${p.display_name || p.name}: ${p.desc || ''}`).join('\n') || '没有启用的插件', learn: false }
       }
-      const result = await client.chatWithAstrBot({ message: question, sessionId: key, username: name })
+      const result = await client.chatWithAstrBot({ message: command, sessionId: key, username: name })
       if (result.ok && result.reply) return { text: result.reply, userText: question, extract: false }
     }
     return { text: '工具服务暂时不可用', learn: false }

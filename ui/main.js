@@ -19,7 +19,7 @@ const path = require('path');
 const os = require('os');
 const { pathToFileURL } = require('node:url');
 const { ALLOWED_CHANNELS, trustedSender } = require('./ipc-policy.js');
-const { resolveDeployment, initializeInstalledData } = require('./deployment-paths.cjs');
+const { resolveDeployment, initializeInstalledData, buildAutostartScript } = require('./deployment-paths.cjs');
 
 // ==================== 路径常量 ====================
 const DEPLOYMENT = resolveDeployment({ env: process.env, resourcesPath: process.resourcesPath || '' });
@@ -54,7 +54,7 @@ async function importProjectModule(relative) {
   const sourceRoot = path.resolve(__dirname, '..', 'src');
   // A smoke run loads its own source/bundle, never a legacy production module
   // which may ignore the injected data root and read the user's real config.
-  const complete = (root) => ['social/index.js', 'skills/review-store.js', 'runtime-paths.js'].every((name) => fs.existsSync(path.join(root, name)));
+  const complete = (root) => ['social/index.js', 'skills/review-store.js', 'runtime-paths.js', 'knowledge/store.js', 'reach/astrbot-connection.js'].every((name) => fs.existsSync(path.join(root, name)));
   const chosenRoot = ISOLATED_SMOKE ? (complete(bundledRoot) ? bundledRoot : sourceRoot)
     : (complete(externalRoot) ? externalRoot : bundledRoot);
   const target = path.join(chosenRoot, relative);
@@ -64,11 +64,12 @@ function registerIpc(channel, handler) {
   if (!ALLOWED_CHANNELS.has(channel)) throw new Error('IPC 通道不在白名单: ' + channel);
   ipcMain.handle(channel, async (event, ...args) => {
     if (!trustedSender(event, BrowserWindow.getAllWindows(), RENDERER_FILE)) return { ok: false, error: '拒绝不可信窗口请求' };
-    if (ISOLATED_SMOKE && !channel.startsWith('skills:') && !channel.startsWith('social:') && !SCOPED_SOCIAL_CHANNELS.has(channel)) {
+    if (ISOLATED_SMOKE && !channel.startsWith('skills:') && !channel.startsWith('social:') && !(channel.startsWith('knowledge:') && channel !== 'knowledge:pick-document') && !SCOPED_SOCIAL_CHANNELS.has(channel)) {
       if (channel === 'getStatus') return { flag: true, botRunning: false, botPid: null, ollamaRunning: false, currentModel: '隔离验收', isolated: true };
       if (channel === 'getModels') return { ok: true, models: [] };
       if (channel === 'getLogs') return { ok: true, lines: ['隔离验收：进程控制、联网和自启已禁用'] };
       if (channel === 'getAutostart') return { ok: true, enabled: false };
+      if (channel === 'getRuntimeInfo') return { ok: true, version: app.getVersion?.() || '开发版', projectRoot: PROJECT_ROOT, dataRoot: DATA_ROOT, installed: DEPLOYMENT.installed, isolated: true };
       return { ok: false, error: '隔离验收模式不访问真实进程、网络或自启配置' };
     }
     try { return await handler(event, ...args); } catch (err) { return { ok: false, error: errMessage(err) }; }
@@ -275,6 +276,7 @@ registerIpc('getStatus', async () => {
     return { ok: false, error: errMessage(err) };
   }
 });
+registerIpc('getRuntimeInfo', async () => ({ ok: true, version: app.getVersion(), projectRoot: PROJECT_ROOT, dataRoot: DATA_ROOT, installed: DEPLOYMENT.installed, isolated: false }));
 
 // 启动 bot
 registerIpc('startBot', async () => {
@@ -579,10 +581,10 @@ registerIpc('startOllama', async () => {
       await new Promise((r) => setTimeout(r, 1000));
       try {
         const res = await fetchWithTimeout(OLLAMA_API, 1500);
-        if (res.ok) break;
+        if (res.ok) return { ok: true };
       } catch (err) { /* 还没起，继续等 */ }
     }
-    return { ok: true };
+    return { ok: false, error: 'Ollama 启动等待超时，请检查本机服务和日志后重试。' };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }
@@ -613,9 +615,7 @@ registerIpc('testChat', async (_event, request) => {
 
 const STARTUP_DIR = path.join(process.env.APPDATA || '', 'Microsoft\\Windows\\Start Menu\\Programs\\Startup');
 const AUTOSTART_VBS = path.join(STARTUP_DIR, DEPLOYMENT.installed ? 'wechaty-bot-installed-autostart.vbs' : 'wechaty-bot-autostart.vbs');
-const AUTOSTART_VBS_CONTENT =
-  "' Wechaty bot autostart: hidden watchdog round (starts bot + ollama)\r\n" +
-  'CreateObject("WScript.Shell").Run "wscript.exe ""' + path.join(PROJECT_ROOT, 'scripts', 'watchdog-launcher.vbs') + '""", 0, False';
+const AUTOSTART_VBS_CONTENT = buildAutostartScript({ ...DEPLOYMENT, configFile: CONFIG_FILE, dataRoot: DATA_ROOT });
 
 registerIpc('getAutostart', async () => {
   return { ok: true, enabled: fs.existsSync(AUTOSTART_VBS) };
@@ -623,10 +623,10 @@ registerIpc('getAutostart', async () => {
 
 registerIpc('setAutostart', async (_event, enable) => {
   try {
-    if (DEPLOYMENT.installed && enable) return { ok: false, error: '安装版默认手动启动，未注册系统自启；请使用开始菜单快捷方式。' };
+    if (typeof enable !== 'boolean') return { ok: false, error: '自启开关必须为布尔值' };
     if (enable) {
       fs.mkdirSync(STARTUP_DIR, { recursive: true });
-      fs.writeFileSync(AUTOSTART_VBS, AUTOSTART_VBS_CONTENT, 'utf8');
+      fs.writeFileSync(AUTOSTART_VBS, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(AUTOSTART_VBS_CONTENT, 'utf16le')]));
     } else if (fs.existsSync(AUTOSTART_VBS)) {
       fs.unlinkSync(AUTOSTART_VBS);
     }
@@ -772,7 +772,7 @@ registerIpc('astrbot:plugins:install', async (_event, repoUrl) => {
   try {
     const mod = await getAstrBot();
     const res = await mod.installPlugin(String(repoUrl || ''));
-    return { ok: res.status !== 'error', message: res.message || '' };
+    return { ok: res.status === 'ok' && res.ok === true, message: res.message || '', error: res.status === 'ok' && res.ok === true ? undefined : res.message || '插件安装失败' };
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }
@@ -806,24 +806,70 @@ registerIpc('astrbot:kb:query', async (_event, payload) => {
 registerIpc('astrbot:service:toggle', async (_event, action) => {
   try {
     const mod = await getAstrBot();
+    if (!['start', 'stop'].includes(action)) return { ok: false, error: '未知服务操作' };
+    if (DEPLOYMENT.installed) return { ok: false, error: '安装版未包含 AstrBot。请在本机另行运行 AstrBot 后配置连接。' };
+    if (!mod.getAstrBotConfig().enabled) return { ok: false, error: '请先在插件中心启用 AstrBot 连接' };
+    const localUrl = new URL(mod.getAstrBotConfig().baseUrl);
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(localUrl.hostname) || (localUrl.port || '80') !== '6185') return { ok: false, error: '自动启停仅管理本机默认端口 6185 的 AstrBot；自定义服务请自行启动。' };
+    const launcher = path.join(PROJECT_ROOT, 'scripts', 'astrbot-control.vbs');
+    const executable = path.join(os.homedir(), '.local', 'bin', 'astrbot.exe');
+    const astrbotRoot = process.env.ASTRBOT_PROJECT_ROOT || 'D:\\astrbot';
+    const owner = path.join(DATA_ROOT, 'state', 'astrbot-owner.txt');
+    if (!fs.existsSync(launcher)) return { ok: false, error: '未找到 AstrBot 服务控制脚本' };
+    if (action === 'start' && (!fs.existsSync(executable) || !fs.existsSync(astrbotRoot))) return { ok: false, error: '未找到本机 AstrBot，请先安装或自行启动外部服务。' };
+    if (action === 'stop' && !fs.existsSync(owner)) return { ok: false, error: '此服务不是由当前控制台启动，请在 AstrBot 中停止。' };
     if (action === 'start') {
-      const launcher = path.join(PROJECT_ROOT, 'scripts', 'start-astrbot.vbs');
-      spawn('wscript.exe', [launcher], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
+      const current = await mod.getAstrBotStatus();
+      if (current.alive || current.reachable) return { ok: false, error: current.alive ? 'AstrBot 已在运行' : current.error };
+    }
+    fs.mkdirSync(path.dirname(owner), { recursive: true });
+    const exit = await new Promise((resolve) => {
+      const child = spawn('wscript.exe', [launcher, action, executable, astrbotRoot, owner], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, stdio: 'ignore' });
+      child.once('error', () => resolve(-1));
+      child.once('exit', resolve);
+    });
+    if (exit !== 0) return { ok: false, error: action === 'stop' ? '无法验证服务归属或停止失败，请在 AstrBot 中停止。' : 'AstrBot 进程未启动成功，请检查本机安装。' };
+    if (action === 'start') {
       // 等待服务端口就绪（最多 10 秒）
       for (let i = 0; i < 10; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         if (await mod.isAstrBotAlive(1000)) break;
       }
-      return { ok: true, alive: await mod.isAstrBotAlive(1000) };
+      const status = await mod.getAstrBotStatus();
+      return status.alive ? { ok: true, alive: true } : { ok: false, alive: false, error: status.error || 'AstrBot 未启动成功，请检查安装与连接配置' };
     } else {
-      const stopper = path.join(PROJECT_ROOT, 'scripts', 'stop-astrbot.vbs');
-      spawn('wscript.exe', [stopper], { windowsHide: true, creationFlags: CREATE_NO_WINDOW, detached: true }).unref();
       await new Promise((r) => setTimeout(r, 1500));
-      return { ok: true, alive: false };
+      const current = await mod.getAstrBotStatus();
+      return current.alive || current.reachable ? { ok: false, alive: true, error: '服务仍在运行，停止操作未完成' } : { ok: true, alive: false };
     }
   } catch (err) {
     return { ok: false, error: errMessage(err) };
   }
+});
+
+registerIpc('astrbot:connection:get', async () => ({ ok: true, data: (await importProjectModule('reach/astrbot-connection.js')).publicAstrBotConnection() }));
+registerIpc('astrbot:connection:save', async (_event, request) => ({ ok: true, data: (await importProjectModule('reach/astrbot-connection.js')).saveAstrBotConnection(request) }));
+registerIpc('astrbot:plugins:uninstall', async (_event, request) => (await getAstrBot()).uninstallPlugin(request));
+
+let knowledgeService;
+async function getKnowledgeService() { return knowledgeService ||= await importProjectModule('knowledge/store.js'); }
+registerIpc('knowledge:list', async () => { const list = (await getKnowledgeService()).listKnowledgeBases(); return { ok: true, list, data: list }; });
+registerIpc('knowledge:create', async (_event, request) => ({ ok: true, data: (await getKnowledgeService()).createKnowledgeBase(request) }));
+registerIpc('knowledge:update', async (_event, request) => ({ ok: true, data: (await getKnowledgeService()).updateKnowledgeBase(request) }));
+registerIpc('knowledge:delete', async (_event, request) => { (await getKnowledgeService()).deleteKnowledgeBase(request); return { ok: true }; });
+registerIpc('knowledge:documents', async (_event, request) => ({ ok: true, list: (await getKnowledgeService()).listKnowledgeDocuments(request) }));
+registerIpc('knowledge:import', async (_event, request) => ({ ok: true, data: (await getKnowledgeService()).importKnowledgeDocument(request) }));
+registerIpc('knowledge:delete-document', async (_event, request) => { (await getKnowledgeService()).deleteKnowledgeDocument(request); return { ok: true }; });
+registerIpc('knowledge:query', async (_event, request) => ({ ok: true, chunks: (await getKnowledgeService()).queryKnowledgeBase(request) }));
+registerIpc('knowledge:pick-document', async (_event, request) => {
+  const result = await dialog.showOpenDialog({ title: '导入本地文本知识文档', properties: ['openFile'], filters: [{ name: '文本文件', extensions: ['txt', 'md', 'markdown', 'csv', 'json'] }] });
+  if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
+  const selected = result.filePaths[0], stat = fs.statSync(selected);
+  if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return { ok: false, error: '请选择小于 2 MB 的文本文件' };
+  if (!['.txt', '.md', '.markdown', '.csv', '.json'].includes(path.extname(selected).toLowerCase())) return { ok: false, error: '仅支持 UTF-8 文本、Markdown、CSV 和 JSON' };
+  const content = fs.readFileSync(selected, 'utf8').replace(/^\uFEFF/, '');
+  if (content.includes('\u0000') || content.includes('\uFFFD')) return { ok: false, error: '文件必须是 UTF-8 文本，请先转换编码' };
+  return { ok: true, data: (await getKnowledgeService()).importKnowledgeDocument({ kbId: request?.kbId, name: path.basename(selected), text: content }) };
 });
 
 // ==================== 窗口与生命周期 ====================
@@ -869,8 +915,8 @@ function createWindow() {
     show: !ISOLATED_SMOKE,
     width: 1280,
     height: 800,
-    minWidth: 1080,
-    backgroundColor: '#fff0f5', // 粉白底色，避免白屏闪烁
+    minWidth: 920,
+    backgroundColor: '#f5f6f5',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,  // 渲染层与主进程隔离，只暴露 window.botctl
@@ -904,9 +950,9 @@ app.whenReady().then(() => {
         report.pages = await win.webContents.executeJavaScript("[...document.querySelectorAll('.page')].map(e=>e.id)");
         if (!report.skills.ok || !report.social.ok || report.controlsBlocked.ok !== false) report.failures.push('服务加载或隔离防线失败');
         if (process.env.BOT_UI_SMOKE_SCREENSHOT) {
-          const page = ['home', 'skill-review', 'social-growth'].includes(process.env.BOT_UI_SMOKE_PAGE) ? process.env.BOT_UI_SMOKE_PAGE : 'social-growth';
-          const refresh = page === 'skill-review' ? 'refreshSkillReviews()' : page === 'social-growth' ? 'refreshSocialScopes()' : 'Promise.resolve()';
-          await win.webContents.executeJavaScript('switchPage(' + JSON.stringify(page) + '); ' + refresh);
+          const available = report.pages.map(id => id.replace(/^page-/, ''));
+          const page = available.includes(process.env.BOT_UI_SMOKE_PAGE) ? process.env.BOT_UI_SMOKE_PAGE : 'social-growth';
+          await win.webContents.executeJavaScript('switchPage(' + JSON.stringify(page) + ')');
           report.activePage = await win.webContents.executeJavaScript("document.querySelector('.page.active')?.id");
           if (report.activePage !== 'page-' + page) throw new Error('隔离验收页面未切换成功');
           await new Promise(resolve => setTimeout(resolve, 500));
