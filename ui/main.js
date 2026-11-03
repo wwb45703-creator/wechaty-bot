@@ -75,6 +75,9 @@ function registerIpc(channel, handler) {
     try { return await handler(event, ...args); } catch (err) { return { ok: false, error: errMessage(err) }; }
   });
 }
+function astrbotFailure(error) {
+  return { ok: false, error: errMessage(error), code: error.code || 'API_ERROR', httpStatus: error.httpStatus || null, requiredScope: error.requiredScope || null, retryable: error.retryable === true };
+}
 const OLLAMA_EXE = DEPLOYMENT.ollamaExe;
 const OLLAMA_API = 'http://127.0.0.1:11434';                         // Ollama API 地址
 
@@ -296,15 +299,32 @@ registerIpc('stopBot', async () => {
   }
 });
 
-// 列出 Ollama 已装模型 → {ok:true, models:[{name,size}]}；失败 {ok:false, error:'Ollama 未运行'}
+const modelCapabilities = new Map();
+async function inspectModel(name) {
+  const cached = modelCapabilities.get(name);
+  if (cached && cached.expires > Date.now()) return cached.profile;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(OLLAMA_API + '/api/show', { method: 'POST', redirect: 'error', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: name }) });
+    if (!response.ok || response.redirected) throw new Error('无法读取模型能力');
+    const metadata = await response.json();
+    const { modelProfile } = await importProjectModule('model-profiles.js');
+    const profile = modelProfile(name, metadata);
+    modelCapabilities.set(name, { profile, expires: Date.now() + 300000 });
+    return profile;
+  } finally { clearTimeout(timer); }
+}
+
+// 列出 Ollama 已装模型与实际能力；能力读取失败时不能选择为聊天模型。
 registerIpc('getModels', async () => {
   try {
     const res = await fetchWithTimeout(OLLAMA_API + '/api/tags', 3000);
     if (!res.ok) return { ok: false, error: 'Ollama 未运行' };
     const data = await res.json();
-    const models = (Array.isArray(data.models) ? data.models : []).map((m) => ({
-      name: m.name,
-      size: m.size,
+    const models = await Promise.all((Array.isArray(data.models) ? data.models : []).map(async (m) => {
+      try { return { name: m.name, size: m.size, canChat: (await inspectModel(m.name)).canChat }; }
+      catch { return { name: m.name, size: m.size, canChat: null }; }
     }));
     return { ok: true, models };
   } catch (err) {
@@ -327,12 +347,15 @@ registerIpc('setCurrentModel', async (_event, name) => {
     }
     name = name.trim();
 
-    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    if (!config.ai || typeof config.ai !== 'object') config.ai = {};
-    config.ai.model = name;
+    if (!(await inspectModel(name)).canChat) return { ok: false, error: '此模型仅用于嵌入，不能设为聊天模型' };
+
+    const source = fs.readFileSync(CONFIG_FILE, 'utf8');
+    const { patchJsonValue } = await importProjectModule('config-patch.js');
+    const withAi = JSON.parse(source).ai ? source : patchJsonValue(source, ['ai'], {});
+    const changed = patchJsonValue(withAi, ['ai', 'model'], name);
 
     const tmpFile = CONFIG_FILE + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(config, null, 2), 'utf8');
+    fs.writeFileSync(tmpFile, changed, 'utf8');
     fs.renameSync(tmpFile, CONFIG_FILE); // 同盘 rename，原子替换
 
     // bot 在运行才需要重启生效；doStartBot 内部会清掉 doStopBot 写入的停用标记
@@ -603,12 +626,16 @@ registerIpc('testChat', async (_event, request) => {
   const ai = await importProjectModule('ai.js');
   ai.initAi(config);
   const epoch = scope ? (await getSocialService()).captureEpoch(scope) : undefined;
+  let research;
   const reply = await ai.generateOnce(text.trim().slice(0, 2000), {
     key: 'console-once:' + JSON.stringify(scope || ['default-role']),
     scope, epoch, personaName, diagnostic: true,
+    research: typeof request === 'object' && request?.research === true,
+    privateNames: scope ? [scope.accountId, scope.subjectId, scope.conversationId] : [],
+    onResearch: value => { const { facts, ...diagnostic } = value; research = diagnostic; },
     systemExtra: '当前是控制台本地模型诊断，只回应当前输入；不发送微信消息，也不把诊断当作共同经历。',
   });
-  return reply ? { ok: true, reply } : { ok: false, error: '本地模型未返回有效回复，请检查 Ollama 状态与本地模型配置' };
+  return reply ? { ok: true, reply, research } : { ok: false, research, error: '未产生可发送的合格回复，请检查模型状态、联网诊断或质量拦截日志' };
 });
 
 // ==================== 开机自启（Startup 目录 vbs，纯文件操作零闪窗） ====================
@@ -728,13 +755,13 @@ async function getAstrBot() {
   return _astrbotModule;
 }
 
-registerIpc('astrbot:status', async () => {
+registerIpc('astrbot:status', async (_event, request) => {
   try {
     const mod = await getAstrBot();
-    const data = await mod.getAstrBotStatus();
+    const data = await mod.getAstrBotStatus({ force: request?.force === true });
     return { ok: true, data };
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -744,7 +771,7 @@ registerIpc('astrbot:plugins:list', async () => {
     const list = await mod.listInstalledPlugins();
     return { ok: true, list };
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -754,7 +781,7 @@ registerIpc('astrbot:plugins:market', async (_event, keyword) => {
     const list = await mod.searchMarketPlugins(String(keyword || ''), 60);
     return { ok: true, list };
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -764,7 +791,7 @@ registerIpc('astrbot:plugins:toggle', async (_event, payload) => {
     const res = await mod.togglePlugin(payload || {});
     return res;
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -774,7 +801,7 @@ registerIpc('astrbot:plugins:install', async (_event, repoUrl) => {
     const res = await mod.installPlugin(String(repoUrl || ''));
     return { ok: res.status === 'ok' && res.ok === true, message: res.message || '', error: res.status === 'ok' && res.ok === true ? undefined : res.message || '插件安装失败' };
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -783,13 +810,13 @@ registerIpc('astrbot:kb:list', async () => {
     const mod = await getAstrBot();
     const res = await mod.listKnowledgeBases();
     return {
-      ok: res.ok,
+      ...res,
       list: res.data || [],
       data: res.data || [],
       error: res.error,
     };
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -799,7 +826,7 @@ registerIpc('astrbot:kb:query', async (_event, payload) => {
     const res = await mod.queryKnowledgeBase(payload || {});
     return res;
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 
@@ -843,7 +870,7 @@ registerIpc('astrbot:service:toggle', async (_event, action) => {
       return current.alive || current.reachable ? { ok: false, alive: true, error: '服务仍在运行，停止操作未完成' } : { ok: true, alive: false };
     }
   } catch (err) {
-    return { ok: false, error: errMessage(err) };
+    return astrbotFailure(err);
   }
 });
 

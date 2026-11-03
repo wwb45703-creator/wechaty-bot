@@ -98,7 +98,13 @@ export async function bingSearch(query, opts = {}) {
       if (!link || !/^https?:\/\//.test(link) || seen.has(link)) continue
       seen.add(link)
       const snip = b.match(/<p[^>]*>([\s\S]*?)<\/p>/i)
-      results.push({ title: stripTags(t[2]), url: link, snippet: snip ? stripTags(snip[1]).slice(0, 200) : '' })
+      const dateText = stripTags(b.match(/<span[^>]*class="[^"]*(?:news_dt|b_algoSlug)[^"]*"[^>]*>([\s\S]*?)<\/span>/i)?.[1] || '')
+      const absolute = dateText.match(/\d{4}[-年/]\d{1,2}[-月/]\d{1,2}日?/)?.[0]
+      const relative = dateText.match(/(\d+)\s*(分钟|小时|天)前/)
+      const parsed = absolute ? Date.parse(absolute.replace(/年|月/g, '-').replace(/日/g, '').replace(/^(\d{4})-(\d{1,2})-(\d{1,2})$/, (_, y, m, d) => `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`)) : relative
+        ? Date.now() - Number(relative[1]) * ({ 分钟: 60000, 小时: 3600000, 天: 86400000 }[relative[2]]) : NaN
+      results.push({ title: stripTags(t[2]), url: link, snippet: snip ? stripTags(snip[1]).slice(0, 200) : '',
+        publishedAt: Number.isFinite(parsed) ? new Date(parsed).toISOString() : null })
       if (results.length >= num) break
     }
     if (!results.length) return null

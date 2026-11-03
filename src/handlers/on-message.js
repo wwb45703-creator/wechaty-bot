@@ -8,6 +8,7 @@ import { handleEmoticonMessage, isEmoticonEnabled } from './on-emoticon.js'
 import { handleLinkMessage, hasProcessableLink } from './on-link.js'
 import { handleSearchMessage, detectSearchIntent } from './search.js'
 import { isForgetCommand } from './text-response.js'
+import { recentContext } from '../conversation-context.js'
 
 /** Testable dispatcher: admission precedes every message type and its side effects. */
 export function createOnMessage({ conf = config, admit = (msg, room) => admitMessage(msg, room, conf), typeMap = null,
@@ -21,11 +22,13 @@ export function createOnMessage({ conf = config, admit = (msg, room) => admitMes
     const types = typeMap || (await import('wechaty')).types.Message
     const text = String(msg.text?.() || '')
     const type = msg.type()
+    if (room && (type === types.Text || type === types.Unknown)) recentContext.observe(a.scope, text, { messageId: msg.id, name: a.name, epoch: a.epoch })
     const question = room ? cleanMention(text, a.selfName, a.rc) : text.trim()
     const shortcut = isForgetCommand(question) || question === '我的记忆' ||
       (conf.dingDong && question.toLowerCase() === 'ding') || (conf.menu?.enabled && question === conf.menu?.keyword)
     if (room) {
-      a.trigger = await trigger(msg, text, a.rc)
+      a.trigger = await trigger(msg, text, { ...a.rc, directedOnly: conf.replyPolicy?.directedOnly === true || a.rc?.directedOnly === true })
+      logger.info(`[群消息诊断] triggered=${a.trigger.triggered} reason=${a.trigger.triggerReason || '-'} textLen=${text.length}`)
       a.shouldAt = a.rc?.atSender === true || (a.rc?.atSender !== false && a.trigger.triggerReason === 'mention')
       if (!a.trigger.triggered && !shortcut) return { status: 'not-triggered' }
     }

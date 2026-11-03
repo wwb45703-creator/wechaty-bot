@@ -3,10 +3,11 @@ import crypto from 'node:crypto'
 import config from './config-loader.js'
 import { dataPath } from './runtime-paths.js'
 import { createRateLimiter } from './rate-limit.js'
-import { splitBubbles, cleanBubbleText, stripAtMentions } from './utils.js'
+import { splitBubbles, cleanBubbleText, stripAtMentions, formatBotReply } from './utils.js'
 import { getActivePersonaName } from './persona-commands.js'
 import { createOutboxStore, purgePendingDeliveries } from './outbox-store.js'
 import * as social from './social/index.js'
+import { recipientAllowed } from './reply-policy.js'
 
 const digest = (value) => crypto.createHash('sha256').update(String(value)).digest('hex')
 export const conversationKey = (scope) => JSON.stringify([scope.platform, scope.accountId, scope.conversationId])
@@ -30,10 +31,35 @@ export function roomConfigFor(conf, topic, roomId) {
   return named.length === 1 ? named[0] : undefined
 }
 
+export function isUserBlacklisted(entry, { id, name = '', alias = '', roomAlias = '' } = {}) {
+  if (!entry) return false
+  if (typeof entry === 'string') {
+    const target = entry.trim()
+    if (!target) return false
+    return Boolean(target === id || target === name || (alias && target === alias) || (roomAlias && target === roomAlias))
+  }
+  if (typeof entry === 'object') {
+    if (entry.id && entry.id === id) return true
+    if (entry.name && entry.name === name) return true
+    if (entry.alias && alias && entry.alias === alias) return true
+    if (entry.roomAlias && roomAlias && entry.roomAlias === roomAlias) return true
+  }
+  return false
+}
+
 export async function admitMessage(msg, room, conf = config, socialApi = social) {
   if (conf?.enabled === false || conf?.bot?.enabled === false || msg.self?.() || msg.talker?.()?.self?.()) return null
+  if (!recipientAllowed(conf, room?.id || '')) return null
   const talker = msg.talker(), name = talker.name?.() || '', id = talker.id
   if (!id) return null
+
+  const globalBlacklist = [
+    ...(Array.isArray(conf?.blacklist) ? conf.blacklist : []),
+    ...(Array.isArray(conf?.blocklist) ? conf.blocklist : []),
+    ...(Array.isArray(conf?.blacklistUsers) ? conf.blacklistUsers : []),
+  ]
+  if (globalBlacklist.some((entry) => isUserBlacklisted(entry, { id, name }))) return null
+
   const accountId = accountIdFor(msg.wechaty || room?.wechaty)
   const scope = { platform: 'wechat', accountId, conversationId: room ? `room:${room.id}` : `private:${id}`, personaId: 'default', subjectId: id }
   // Capture before alias/topic/mention lookups can yield to a privacy command.
@@ -43,6 +69,16 @@ export async function admitMessage(msg, room, conf = config, socialApi = social)
   if (room && (!rc || rc.enabled === false || conf?.room?.enabled === false)) return null
   if (!room && conf?.private?.enabled === false) return null
   const alias = room ? '' : (await talker.alias?.()?.catch(() => '') || '')
+  const contactAlias = room ? (await talker.alias?.()?.catch(() => '') || '') : alias
+  const roomAlias = room ? (await room.alias?.(talker)?.catch(() => '') || '') : ''
+
+  const allBlacklist = [
+    ...globalBlacklist,
+    ...(!room && Array.isArray(conf?.private?.blacklist) ? conf.private.blacklist : []),
+    ...(room && Array.isArray(rc?.blacklist) ? rc.blacklist : []),
+  ]
+  if (allBlacklist.some((entry) => isUserBlacklisted(entry, { id, name, alias: contactAlias, roomAlias }))) return null
+
   if (!room) {
     const ids = conf?.private?.whitelistIds || []
     const list = conf?.private?.whitelist || []
@@ -185,11 +221,17 @@ export function createMessagingRuntime({ conf = config, dataRoot = null, socialA
     return limits
   }
   async function process({ msg, room = null, kind = 'text', producer, admission = null, forget = false, allConversations = false }) {
+    if (!recipientAllowed(conf, room?.id || '', kind)) return { status: 'denied', confirmedCount: 0 }
     const feature = ({ search: conf.reach?.search, link: conf.links, image: conf.vision, emoticon: conf.emoticon,
       welcome: conf.welcome, cron: conf.scheduler })[kind]
     if (feature?.enabled === false || (kind === 'search' && conf.reach?.enabled === false)) return { status: 'disabled', confirmedCount: 0 }
     const a = admission || await admitMessage(msg, room, conf, socialApi)
     if (!a) return { status: 'denied', confirmedCount: 0 }
+    if (room && conf.replyPolicy?.directedOnly === true) {
+      const { checkRoomTrigger } = await import('./handlers/room.js')
+      a.trigger = await checkRoomTrigger(msg, msg.text?.() || '', { ...a.rc, directedOnly: true })
+      if (!a.trigger.triggered) return { status: 'not-triggered', confirmedCount: 0 }
+    }
     const rawId = msg.id
     if (!rawId) return { status: 'missing-message-id', confirmedCount: 0 }
     const queueKey = conversationKey(a.scope)
@@ -242,8 +284,9 @@ export function createMessagingRuntime({ conf = config, dataRoot = null, socialA
         const sent = []
         await wait(firstDelay(), ctrl.signal)
         for (let i = 0; i < bubbles.length; i++) {
+          if (!recipientAllowed(conf, room?.id || '', kind)) { outcome.status = outcome.confirmedCount ? 'partial' : 'denied'; break }
           if (!tokenCurrent(scope, epoch) || ctrl.signal.aborted) { outcome.status = outcome.confirmedCount ? 'partial' : 'stale'; break }
-          const text = cleanBubbleText(room ? stripAtMentions(bubbles[i], [a.name, a.selfName].filter(Boolean)) : bubbles[i])
+          const text = formatBotReply(cleanBubbleText(room ? stripAtMentions(bubbles[i], [a.name, a.selfName].filter(Boolean)) : bubbles[i]))
           if (!text) continue
           row.status = 'sending'; row.attemptedCount = ++outcome.attemptedCount; save()
           try {

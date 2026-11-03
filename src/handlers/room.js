@@ -1,17 +1,33 @@
 import config from '../config-loader.js'
 import { processMessage, admitMessage, accountIdFor } from '../messaging.js'
 import { produceTextResponse, isForgetCommand, isAllForget } from './text-response.js'
+import { directedTextReason } from '../reply-policy.js'
 /** 去掉 @xxx 等提及噪音、唤醒词及指令前缀，留下干净的问题文本 */
 export function cleanMention(text, botName, rc = {}) {
   let t = text
   const wakeWords = rc?.wakeWords ?? config.defaultWakeWords ?? []
   const prefixes = rc?.prefixes ?? []
+  const cleanParen = (s) => String(s || '').replace(/[（）()]/g, '').trim()
+  const defaultAt = Array.isArray(config.defaultAtNames) ? config.defaultAtNames : []
+  const atNames = Array.isArray(rc?.atNames) ? rc.atNames : []
 
-  // 1. 去除 @ 自身及默认唤醒词
-  for (const n of new Set([botName, ...wakeWords, ...Object.values(config.defaultWakeWords || [])])) {
+  // 1. 去除 @ 自身、群名片及默认唤醒词
+  t = t.replace(/@\S+[\s\u2005]?/g, '').trim()
+  const atCandidates = [
+    botName,
+    cleanParen(botName),
+    config.defaultPersona,
+    '鹅王',
+    ...defaultAt,
+    ...atNames,
+    ...wakeWords,
+    ...Object.values(config.defaultWakeWords || [])
+  ].filter(Boolean)
+
+  for (const n of new Set(atCandidates)) {
     if (n) t = t.split(`@${n}`).join('')
   }
-  t = t.replace(/@\S+\s?/g, '').trim()
+  t = t.replace(/^[（(].*?[）)]\s*/, '').trim()
 
   // 2. 去除前缀唤醒符号（如 "？天气如何" -> "天气如何"）
   for (const p of prefixes) {
@@ -73,18 +89,42 @@ export async function checkRoomTrigger(msg, text, rc = {}) {
   }
 
   const mode = rc?.mode ?? config.defaultRoomMode ?? 'mention'
+  const directedOnly = rc?.directedOnly === true || config.replyPolicy?.directedOnly === true
 
   // 1. 全量畅聊模式
-  if (mode === 'all') {
+  if (mode === 'all' && !directedOnly) {
     return { triggered: true, selfName, triggerReason: 'mode:all' }
   }
 
-  // 2. 被 @ 触发
-  const atMe = selfName && text.includes(`@${selfName}`)
-  const mentioned = atMe || (await msg.mentionSelf().catch(() => false))
+  // 2. 被 @ 触发（puppet-xp 接收侧不下发 @ 列表，msg.mentionSelf() 恒为 false，
+  //    因此按消息文本匹配：微信昵称 + 本群群名片 + rc.atNames 显式声明的显示名 + 去括号根词）
+  let card = ''
+  const me = w?.currentUser
+  if (me && msg.room?.()) card = await msg.room().alias(me).catch(() => '')
+  const cleanParen = (s) => String(s || '').replace(/[（）()]/g, '').trim()
+  const defaultAt = Array.isArray(config.defaultAtNames) ? config.defaultAtNames : []
+  const personaName = config.defaultPersona || '鹅王'
+  const rawCandidates = [
+    selfName,
+    cleanParen(selfName),
+    personaName,
+    cleanParen(personaName),
+    '鹅王',
+    ...defaultAt,
+    ...defaultAt.map(cleanParen),
+    card,
+    cleanParen(card),
+    ...(Array.isArray(rc?.atNames) ? rc.atNames : []),
+    ...(Array.isArray(rc?.atNames) ? rc.atNames.map(cleanParen) : [])
+  ]
+  const atCandidates = [...new Set(rawCandidates)].filter(Boolean)
+  const reason = directedOnly ? directedTextReason(text, { names: atCandidates, wakeWords: rc?.wakeWords ?? config.defaultWakeWords ?? [], conf: config }) : ''
+  const atMe = directedOnly ? reason === 'mention' : atCandidates.some((n) => text.includes(`@${n}`))
+  const mentioned = atMe || (await msg.mentionSelf?.().catch(() => false))
   if (mentioned) {
-    return { triggered: true, selfName, triggerReason: 'mention' }
+    return { triggered: true, selfName, triggerReason: 'mention', card }
   }
+  if (directedOnly) return { triggered: Boolean(reason), selfName, triggerReason: reason, card }
 
   // 3. 唤醒词触发
   const wakeWords = rc?.wakeWords ?? config.defaultWakeWords ?? []
@@ -114,7 +154,7 @@ export async function checkRoomTrigger(msg, text, rc = {}) {
     }
   }
 
-  return { triggered: false, selfName }
+  return { triggered: false, selfName, card }
 }
 
 export async function handleRoomMessage(msg, room, admission = null) {

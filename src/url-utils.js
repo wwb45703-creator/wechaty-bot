@@ -31,6 +31,20 @@ export function extractMeta(html) {
   return { title: clean(title), description: clean(desc) }
 }
 
+export function extractPublication(html) {
+  let value
+  for (const tag of String(html).match(/<meta\b[^>]*>/gi) || []) {
+    const attributes = Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*["']([^"']*)["']/g)].map(match => [match[1].toLowerCase(), match[2]]))
+    if (/^(?:article:published_time|datePublished|publishdate|pubdate)$/i.test(attributes.property || attributes.name || attributes.itemprop || '')) { value = attributes.content; break }
+  }
+  value ||= (String(html).match(/"datePublished"\s*:\s*"([^"']+)"/i) || [])[1]
+    || (String(html).match(/<time[^>]*datetime=["']([^"']+)["']/i) || [])[1]
+    || (htmlToText(html).slice(0, 700).match(/(?:发布时间|发布日期|发表时间|发布时间[:：]?|时间[:：])\s*[:：]?\s*(\d{4}[-年/]\d{1,2}[-月/]\d{1,2}日?)/) || [])[1]
+  const normalized = value?.replace(/年|月/g, '-').replace(/日/g, '').replace(/^(\d{4})-(\d{1,2})-(\d{1,2})$/, (_, y, m, d) => `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`)
+  const parsed = normalized && new Date(normalized)
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null
+}
+
 /** 判断 Content-Type / 路径是否为视频/音频/图片等媒体直链 */
 function isMediaDirect(type, urlPath) {
   if (/^video\//i.test(type)) return '视频文件'
@@ -51,10 +65,11 @@ export async function fetchPageText(urlStr, opts = {}) {
     if (media) return { ok: true, kind: 'media', summary: `这是一个${media}直链，无法直接读取其内容。` }
     const raw = await response.text()
     const { title, description } = extractMeta(raw)
+    const publishedAt = extractPublication(raw)
     const text = htmlToText(raw).slice(0, Math.min(12000, opts.summaryChars || 1200))
     if (!title && !description && !text) return { ok: false, error: '页面没有可读的文本内容' }
     const summary = [title && `标题：${title}`, description && `简介：${description}`, text && `正文摘录：${text}`].filter(Boolean).join('\n')
-    return { ok: true, kind: 'page', title, description, text, summary, truncated: response.truncated || false }
+    return { ok: true, kind: 'page', title, description, text, summary, publishedAt, url: response.url || urlStr, truncated: response.truncated || false }
   } catch (err) {
     return { ok: false, error: err.fatal ? err.message : '链接无法访问', code: err.code || 'FETCH_FAILED', fatal: Boolean(err.fatal) }
   }

@@ -26,7 +26,7 @@ test('local provider refuses cloud endpoints and reports structured usage', asyn
   } })
   const result = await provider.generate({ messages: [{ role: 'user', content: '你好' }] })
   assert.equal(result.provider, 'ollama'); assert.deepEqual(result.usage, { inputTokens: 123, outputTokens: 12 })
-  assert.equal(packet.think, false)
+  assert.equal(packet.think, undefined)
 })
 
 test('provider deadline covers stalled model responses and JSON bodies', async () => {

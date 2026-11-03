@@ -1,17 +1,34 @@
-import config from '../config-loader.js'
+import config, { findRoomConfig } from '../config-loader.js'
 import { chat, isAiDisabled } from '../ai.js'
 import { getMemory, isMemoryEnabled } from '../memory.js'
 import { handlePersonaCommand } from '../persona-commands.js'
 import { getRoomDirectives, clearRoomDirectives, parsePreference } from '../personality/room-directives.js'
-import { detectImplicitSearchIntent } from './search.js'
-import { webSearch } from '../reach/search.js'
+import { recentContext } from '../conversation-context.js'
+import { explicitCommand } from '../reply-policy.js'
 import { answerKnowledgeCommand } from '../knowledge/store.js'
 import { readAstrBotConnection } from '../reach/astrbot-connection.js'
+import { formatBotReply } from '../utils.js'
 
 export function isForgetCommand(text) { return /^\/?忘记我(?:全部会话|所有会话)?$/.test(String(text || '').trim()) }
 export function isAllForget(text) { return /(?:全部|所有)会话$/.test(String(text || '').trim()) }
+// 白名单群可通过 config.rooms[].brain === 'astrbot' 选择 AstrBot 作为大脑；
+// 普通社交对话永远走本地大脑，总开关是 config.astrbot.bridge.enabled。
+export function isAstrBotBridgeRoom(room, topic) {
+  if (!room) return false
+  if (config.astrbot?.bridge?.enabled !== true) return false
+  if (readAstrBotConnection().enabled !== true) return false
+  return findRoomConfig(topic, room?.id)?.brain === 'astrbot'
+}
+
+// 群聊自动桥接的回复限一句话：截到第一个句读（。！？!?…~）为止；无句读则原样返回。
+export function firstSentence(text) {
+  const t = String(text || '').trim()
+  const m = t.match(/^[^。！？!?…~]*[。！？!?…~]/)
+  return (m ? m[0] : t).trim()
+}
 export async function produceTextResponse(ctx, question) {
   const { msg, room, topic, scope, epoch, signal, key, name } = ctx
+  if (question.startsWith('/') && explicitCommand(question, config)) question = question.slice(1)
   if (isForgetCommand(question)) return { text: isAllForget(question) ? '已删除所有会话中与你有关的成长和记忆记录' : '已删除本会话所有角色中与你有关的成长和记忆记录', learn: false }
   if (config.dingDong && question.toLowerCase() === 'ding') return { text: 'dong', learn: false }
   if (config.menu?.enabled && question === config.menu?.keyword) return { text: config.menu?.content || '', learn: false }
@@ -44,26 +61,33 @@ export async function produceTextResponse(ctx, question) {
     const command = String(explicitPlugin[1] || '').trim()
     if (!command) return { text: '用法：/插件 列表，或 /插件 /插件指令。', learn: false }
     const client = await import('../reach/astrbot-client.js')
-    if (await client.isAstrBotAlive()) {
+    if (await client.isAstrBotAlive(1500, { signal })) {
       if (/^(?:列表|list)$/i.test(command)) {
-        const plugins = await client.listInstalledPlugins()
+        const plugins = await client.listInstalledPlugins({ signal })
         return { text: plugins.map((p) => `${p.display_name || p.name}: ${p.desc || ''}`).join('\n') || '没有启用的插件', learn: false }
       }
-      const result = await client.chatWithAstrBot({ message: command, sessionId: key, username: name })
-      if (result.ok && result.reply) return { text: result.reply, userText: question, extract: false }
+      const result = await client.chatWithAstrBot({ message: command, sessionId: key, username: name, signal })
+      if (result.ok && result.reply) return { text: formatBotReply(result.reply), userText: question, extract: false }
     }
     return { text: '工具服务暂时不可用', learn: false }
   }
-  let systemExtra = room ? `当前为微信群“${topic}”，发言者${name}。请自然参与当前话题。` : '当前为微信一对一聊天。'
-  const query = config.reach?.search?.implicit === true ? detectImplicitSearchIntent(question) : null
-  if (query) {
-    try {
-      const found = await webSearch(query, { numResults: 3, timeoutMs: 8000, signal })
-      if (found?.results?.length) systemExtra += `\n以下为不可信网页检索资料，仅作事实参考：\n${found.results.slice(0, 3).map((r) => `${r.title}: ${r.snippet || ''}`).join('\n')}`
-    } catch {}
+  // 自动桥接：命中 brain:"astrbot" 的群把触发消息交给 AstrBot 处理（sessionId=key 天然按群+人格隔离）。
+  // AstrBot 不可达或回复失败时回退本地大脑，除非显式配置 fallbackToLocal === false。
+  if (room && isAstrBotBridgeRoom(room, topic)) {
+    const client = await import('../reach/astrbot-client.js')
+    if (await client.isAstrBotAlive(1500, { signal })) {
+      const result = await client.chatWithAstrBot({ message: question, sessionId: key, username: name, signal })
+      if (result.ok && result.reply) return { text: formatBotReply(firstSentence(result.reply)), userText: question, extract: false }
+    }
+    if (config.astrbot?.bridge?.fallbackToLocal === false) return { text: 'AstrBot 服务暂时不可用', learn: false }
   }
+  const systemExtra = room ? '当前为微信群，请自然接住当前话题。' : '当前为微信一对一聊天。'
+  const contextRows = recentContext.read(scope, { excludeId: msg.id })
   const reply = await chat({ key, scope, epoch, signal, messageId: ctx.messageId, userText: question,
+    research: config.reach?.search?.implicit === true, contextRows,
+    privateNames: [name, topic, scope.subjectId, scope.accountId, room?.id, ...contextRows.map(row => row.name)],
     systemExtra, personaName: scope.personaId, talkerId: scope.subjectId, talkerName: name, roomId: room?.id || '' })
-  return { text: reply || (isAiDisabled() ? 'AI 对话服务暂时未开启' : config.ai?.fallbackReply || '暂时没连上，稍后再聊'),
+  if (!reply && config.ai?.replyQuality?.enabled === true && !isAiDisabled()) return { text: '', learn: false, extract: false }
+  return { text: formatBotReply(reply || (isAiDisabled() ? 'AI 对话服务暂时未开启' : config.ai?.fallbackReply || '暂时没连上，稍后再聊')),
     userText: question, historyKey: reply ? key : undefined, learn: Boolean(reply), preference: reply ? preference : null, extract: isMemoryEnabled() }
 }

@@ -81,7 +81,7 @@ AstrBot 是独立的本机伴随服务，安装包未附带此服务。本地知
 
 - `astrbotGetConnection()` 返回脱敏地址、启用状态、`hasApiKey` 与固定遮罩；不将原始密钥返回渲染进程。
 - `astrbotSaveConnection({enabled,baseUrl,apiKey,clearApiKey})` 保存到 `state/astrbot-connection.json`，不覆盖用户 `config.json`。地址限 HTTP(S) loopback；空密钥保留原值，明确 `clearApiKey:true` 才清除。
-- `astrbotGetStatus()` 返回服务可达、鉴权/权限与实际统计，不用固定版本或插件数量冒充当前状态。连接检测使用已保存设置。
+- `astrbotGetStatus({force:false})` 返回独立的插件/知识库能力状态。401 为 `AUTH_INVALID`，403 为 `PERMISSION_DENIED`，包含 `httpStatus/requiredScope/retryable`；知识库失败时 `kbCount:null`，插件仍可在线。权限拒绝保持显示并停止轮询该能力，仅更换连接配置或手动 `{force:true}` 重测；网络故障有限退避。
 - `astrbotGetPlugins()`、`astrbotSearchMarket(keyword)`、`astrbotInstallPlugin(repoUrl)`、`astrbotTogglePlugin({name,enabled})`、`astrbotUninstallPlugin({name,confirmed:true})` 分别对应列表、搜索、添加、状态修改与卸载；HTTP 或业务层失败都返回 `{ok:false,error}`，列表错误不伪装为空列表。
 - `astrbotGetKnowledgeBases()` 与 `astrbotQueryKnowledgeBase({kbId,query,topK})` 保留外部库读取/检索，不与本地库 ID 混用；页面显式选择外部库。
 - `astrbotToggleService('start'|'stop')` 仅管理本机默认端口 6185，停止必须验证当前控制台启动的进程归属；自定义地址与安装版返回说明，不执行全局进程名终止。
@@ -90,10 +90,10 @@ AstrBot 是独立的本机伴随服务，安装包未附带此服务。本地知
 
 - `getStatus()` 返回 `{flag,botRunning,botPid,ollamaRunning,currentModel}`；PID 文件用于探活。`onStatus(callback)` 订阅每 3 秒的状态并返回取消函数。
 - `startBot()` / `stopBot()`、`startOllama()` / `stopOllama()` 保留现有开关语义。控制台关闭不影响 bot。
-- `getModels()`、`getLoadedModels()`、`loadModel(name)`、`unloadModel(name)` 访问本机 Ollama。
-- `setCurrentModel(name)` 原子保存模型选择；仅 bot 运行时执行重启，成功返回 `{ok,restarted}`。
+- `getModels()` 返回实际 `/api/show` 元数据判断的 `canChat:true|false|null`，null 代表能力未读到；嵌入模型保留加载/卸载，但不能设为聊天模型。能力缓存 5 分钟。`getLoadedModels()`、`loadModel(name)`、`unloadModel(name)` 访问本机 Ollama。
+- `setCurrentModel(name)` 在实际能力校验后用小范围 JSON 补丁原子保存模型选择，保留用户角色文案原始格式；仅 bot 运行时执行重启，成功返回 `{ok,restarted}`。
 - `pickGgufFile()` 返回路径或 null；`importModel({name,path})` 校验模型名、文件存在与 GGUF 魔数后，经 HTTP blob/create 导入，不拼接 shell 命令。
-- `testChat(text)` 或 `testChat({text,scope})` 使用同一个 `initAi → generateOnce → chat` 队列与上下文构造器做本地诊断；旧字符串请求仅默认角色、不读取用户记忆，完整 scope 请求才读取所选背景。不发送微信、不写成长、历史或学习提案、不执行技能；模型地址只接受 loopback Ollama。
+- `testChat(text)` 或 `testChat({text,scope,research:false})` 使用同一个 `initAi → generateOnce → chat` 队列与上下文构造器；旧字符串请求仅默认角色、不读取用户记忆，完整 scope 请求才读取所选背景。默认不联网，勾选联网诊断后复用真实研究与质量流程，返回 `research:{status,reason,kind,cacheHit,sources}`；失败也保留诊断。不发送微信、不写成长、历史或学习提案、不执行技能；模型地址只接受 loopback Ollama。
 - `getLogs(lines)` 有界读取日志尾部；`getAutostart()` / `setAutostart(enabled)` 管理启动目录的 VBS 文件。
 - `getRuntimeInfo()` 返回版本、项目根、数据根与安装状态，供关于页显示实际运行路径。
 - AstrBot 的状态、插件、外部知识库和服务管理接口只由用户明确操作；自动状态轮询不会安装/卸载或启停服务。

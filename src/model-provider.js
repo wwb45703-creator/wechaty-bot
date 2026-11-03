@@ -1,3 +1,5 @@
+import { modelProfile, adaptModelMessages } from './model-profiles.js'
+
 function abortable(promise, signal) {
   if (signal.aborted) return Promise.reject(new Error('模型任务已取消或超时'))
   return new Promise((resolve, reject) => {
@@ -8,7 +10,10 @@ function abortable(promise, signal) {
 }
 
 /** ModelProvider: local inference only. Cloud adapters must be explicitly added later. */
-export function createOllamaProvider(config = {}, { fetchImpl = (...args) => fetch(...args) } = {}) {
+export function createOllamaProvider(config = {}, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || ((...args) => fetch(...args))
+  const inspectModels = dependencies.inspectModels ?? !dependencies.fetchImpl
+  const metadata = new Map()
   const ai = config.ai || config
   const base = new URL(ai?.baseUrl || 'http://127.0.0.1:11434')
   if (!['http:', 'https:'].includes(base.protocol) ||
@@ -18,7 +23,7 @@ export function createOllamaProvider(config = {}, { fetchImpl = (...args) => fet
   if (ai?.provider && ai.provider !== 'ollama') throw new Error('当前仅启用 Ollama provider')
   return {
     name: 'ollama',
-    async generate({ messages, model = ai?.model, options = {}, signal, timeoutMs, keepAlive } = {}) {
+    async generate({ messages, model = ai?.model, options = {}, signal, timeoutMs, keepAlive, format } = {}) {
       if (!Array.isArray(messages) || !model) throw new Error('缺少模型或 messages')
       const controller = new AbortController()
       const abort = () => controller.abort(signal?.reason)
@@ -27,14 +32,23 @@ export function createOllamaProvider(config = {}, { fetchImpl = (...args) => fet
       const timer = setTimeout(() => controller.abort(), timeoutMs || (ai?.timeoutSeconds || 180) * 1000)
       try {
         if (controller.signal.aborted) throw new Error('模型任务已取消')
+        if (inspectModels && (!metadata.has(model) || metadata.get(model).expires < Date.now())) {
+          const show = await abortable(fetchImpl(new URL('/api/show', base), { method: 'POST', redirect: 'error', signal: controller.signal,
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) }), controller.signal)
+          if (!show.ok || show.redirected) throw new Error(`无法读取模型能力：Ollama HTTP ${show.status}`)
+          metadata.set(model, { value: await abortable(show.json(), controller.signal), expires: Date.now() + 300000 })
+        }
+        const profile = modelProfile(model, metadata.get(model)?.value, ai)
+        if (!profile.canChat) throw Object.assign(new Error('该模型仅支持嵌入，不能用于聊天'), { code: 'MODEL_NOT_CHAT' })
         const res = await abortable(fetchImpl(new URL('/api/chat', base), {
           method: 'POST', signal: controller.signal, redirect: 'error',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model, messages, stream: false, think: false,
+            model, messages: adaptModelMessages(messages, profile), stream: false,
+            ...(profile.thinking === undefined ? {} : { think: profile.thinking }),
+            ...(format === undefined || !profile.jsonFormat ? {} : { format }),
             keep_alive: keepAlive ?? ai?.keepAlive ?? '2h',
-            options: { temperature: ai?.temperature ?? 0.8, repeat_penalty: 1.18,
-              presence_penalty: 0.4, frequency_penalty: 0.3, ...options },
+            options: { ...profile.options, ...options },
           }),
         }), controller.signal)
         if (res.redirected) throw new Error('本地模型禁止重定向')

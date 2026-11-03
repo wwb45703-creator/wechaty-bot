@@ -13,6 +13,8 @@
 import { logger } from '../logger.js'
 import { validateExternalUrl } from '../url-utils.js'
 import { readAstrBotConnection } from './astrbot-connection.js'
+import { createHash } from 'node:crypto'
+import { createCapabilityMonitor, publicCapability } from './astrbot-health.js'
 
 
 /** 获取 AstrBot 配置 */
@@ -21,34 +23,52 @@ export function getAstrBotConfig() {
   return { ...value, baseUrl: value.baseUrl.replace(/\/+$/, '') }
 }
 
-function assertEnabled(cfg) { if (!cfg.enabled) throw new Error('AstrBot 桥接未启用，请在插件中心启用连接') }
-function apiError(res, data) {
-  if (res.status === 401 || res.status === 403) return 'AstrBot 认证失败，请配置具有 plugin / kb 权限的 API Key'
-  return String(data?.message || data?.detail || `AstrBot HTTP ${res.status} / 响应格式无效`).slice(0, 500)
+function assertEnabled(cfg) { if (!cfg.enabled) throw Object.assign(new Error('AstrBot 桥接未启用，请在插件中心启用连接'), { code: 'DISABLED', retryable: false }) }
+function scopeFor(endpoint) { return endpoint.startsWith('/knowledge-bases') ? 'kb' : endpoint.startsWith('/chat') ? 'chat' : 'plugin' }
+function apiError(res, data, endpoint) {
+  const requiredScope = scopeFor(endpoint)
+  let message = String(data?.message || data?.detail || `AstrBot HTTP ${res.status} / 响应格式无效`).slice(0, 500)
+  if (res.status === 401) message = 'AstrBot 认证失败（401）：API Key 无效或已失效'
+  if (res.status === 403) message = `AstrBot 权限不足（403）：缺少 ${requiredScope} 权限，请在管理界面创建已授权的专用 Key`
+  const secret = getAstrBotConfig().apiKey
+  if (secret) message = message.split(secret).join('[已隐藏]')
+  return Object.assign(new Error(message), { code: res.status === 401 ? 'AUTH_INVALID' : res.status === 403 ? 'PERMISSION_DENIED' : !data ? 'INVALID_RESPONSE' : res.status >= 500 ? 'SERVICE_UNAVAILABLE' : 'API_ERROR',
+    httpStatus: res.status, requiredScope, reachable: true, retryable: res.status >= 500 })
 }
-async function requestJson(endpoint, { method = 'GET', body, timeoutMs } = {}) {
+const identity = () => createHash('sha256').update(JSON.stringify(getAstrBotConfig())).digest('hex')
+const monitor = createCapabilityMonitor({ notify(name, state) { logger.warn(`[AstrBot] ${name === 'knowledge' ? '知识库' : '插件'}状态：${state.error}`) } })
+const failure = error => ({ ok: false, error: error.message || error.error, code: error.code || 'SERVICE_UNAVAILABLE', httpStatus: error.httpStatus || null,
+  requiredScope: error.requiredScope || null, retryable: error.retryable !== false })
+async function requestJson(endpoint, { method = 'GET', body, timeoutMs, signal } = {}) {
   const cfg = getAstrBotConfig(); assertEnabled(cfg)
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs || cfg.timeoutMs || 10000)
+  const cancel = () => controller.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
   try {
     const res = await fetch(`${cfg.baseUrl}/api/v1${endpoint}`, { method, headers: {
       Authorization: `ApiKey ${cfg.apiKey}`, 'Accept-Language': 'zh-CN', ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
     }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal })
     const data = await res.json().catch(() => null)
-    if (!res.ok || data?.status !== 'ok') throw Object.assign(new Error(apiError(res, data)), { reachable: true })
+    if (!res.ok || data?.status !== 'ok') throw apiError(res, data, endpoint)
     return data
   } catch (error) {
-    if (error.name === 'AbortError') throw new Error('AstrBot 请求超时，请检查插件服务')
+    if (error.name === 'AbortError') throw Object.assign(new Error('AstrBot 请求超时，请检查插件服务'), { code: 'TIMEOUT', retryable: true })
+    if (!error.code) Object.assign(error, { code: 'SERVICE_UNAVAILABLE', retryable: true })
     throw error
-  } finally { clearTimeout(timer) }
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel) }
 }
 
 /** 探活检测：AstrBot 服务端是否健康在线 */
-export async function isAstrBotAlive(timeoutMs = 1500) {
+export async function isAstrBotAlive(timeoutMs = 1500, { signal } = {}) {
   const cfg = getAstrBotConfig()
   if (!cfg.enabled) return false
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const cancel = () => controller.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
 
   try {
     const res = await fetch(`${cfg.baseUrl}/api/v1/plugins`, {
@@ -65,6 +85,7 @@ export async function isAstrBotAlive(timeoutMs = 1500) {
     return false
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', cancel)
   }
 }
 
@@ -87,7 +108,7 @@ export function isAstrBotCommand(text) {
  * @param {number} [params.timeoutMs] 超时时间毫秒
  * @returns {Promise<{ ok: boolean, reply?: string, error?: string }>}
  */
-export async function chatWithAstrBot({ message, sessionId = 'default', username = 'user', timeoutMs }) {
+export async function chatWithAstrBot({ message, sessionId = 'default', username = 'user', timeoutMs, signal }) {
   const cfg = getAstrBotConfig()
   if (!cfg.enabled) {
     return { ok: false, error: 'AstrBot 桥接未启用' }
@@ -96,6 +117,9 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
   const effectiveTimeout = timeoutMs || cfg.timeoutMs
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), effectiveTimeout)
+  const cancel = () => controller.abort()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
 
   try {
     const res = await fetch(`${cfg.baseUrl}/api/v1/chat`, {
@@ -113,8 +137,7 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
     })
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => '')
-      return { ok: false, error: `AstrBot HTTP ${res.status}: ${errText}` }
+      return failure(apiError(res, await res.json().catch(() => null), '/chat'))
     }
 
     // 解析 SSE 流
@@ -148,16 +171,18 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
     return { ok: true, reply: finalReply }
   } catch (err) {
     const isAbort = err.name === 'AbortError'
-    logger.warn(`[AstrBot] 请求异常: ${isAbort ? '响应超时' : err.message}`)
-    return { ok: false, error: isAbort ? 'AstrBot 响应超时' : err.message }
+    if (!signal?.aborted) logger.warn(`[AstrBot] 请求异常: ${isAbort ? '响应超时' : '服务不可达'}`)
+    return failure(Object.assign(new Error(signal?.aborted ? 'AstrBot 请求已取消' : isAbort ? 'AstrBot 响应超时' : 'AstrBot 服务不可达'),
+      { code: signal?.aborted ? 'CANCELLED' : isAbort ? 'TIMEOUT' : 'SERVICE_UNAVAILABLE', retryable: !signal?.aborted }))
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', cancel)
   }
 }
 
 /** 查询 AstrBot 当前已安装插件 */
-export async function listInstalledPlugins() {
-  const data = await requestJson('/plugins')
+export async function listInstalledPlugins(options = {}) {
+  const data = await requestJson('/plugins', options)
   if (!Array.isArray(data.data)) throw new Error('AstrBot 插件列表格式不正确')
   return data.data
 }
@@ -209,7 +234,7 @@ export async function installPlugin(repoUrl) {
     return { ...data, ok: true }
   } catch (e) {
     logger.error(`[AstrBot] 安装插件异常: ${e.message}`)
-    return { status: 'error', message: e.message }
+    return { ...failure(e), status: 'error', message: e.message }
   }
 }
 
@@ -226,20 +251,18 @@ export async function togglePlugin({ name, enabled }) {
     return { ok: true, data: data.data }
   } catch (e) {
     logger.error(`[AstrBot] 切换插件状态异常: ${e.message}`)
-    return { ok: false, error: e.message }
+    return failure(e)
   }
 }
 
 /** 查询知识库列表 */
-export async function listKnowledgeBases() {
-  try {
+export async function listKnowledgeBases({ force = true } = {}) {
+  const state = await monitor.probe('knowledge', async () => {
     const data = await requestJson('/knowledge-bases')
     if (!Array.isArray(data.data?.items)) throw new Error('AstrBot 知识库列表格式不正确')
-    return { ok: true, data: data.data.items.map(item => ({ ...item, id: item.kb_id || item.id, name: item.kb_name || item.name, documents_count: item.doc_count ?? item.documents_count ?? 0, chunks_count: item.chunk_count ?? item.chunks_count ?? 0 })) }
-  } catch (e) {
-    logger.warn(`[AstrBot] 查询知识库列表失败: ${e.message}`)
-    return { ok: false, error: e.message, data: [] }
-  }
+    return data.data.items.map(item => ({ ...item, id: item.kb_id || item.id, name: item.kb_name || item.name, documents_count: item.doc_count ?? item.documents_count ?? 0, chunks_count: item.chunk_count ?? item.chunks_count ?? 0 }))
+  }, { identity: identity(), force })
+  return state.status === 'ready' ? { ok: true, data: state.value, capability: publicCapability(state) } : { ...failure(state), data: [], capability: publicCapability(state) }
 }
 
 /** 在指定知识库中检索知识切片 */
@@ -255,7 +278,7 @@ export async function queryKnowledgeBase({ kbId, kbName, query, topK = 3 }) {
     let selectedName = String(kbName || '').trim()
     if (!selectedName) {
       const bases = await listKnowledgeBases()
-      if (!bases.ok) throw new Error(bases.error)
+      if (!bases.ok) return bases
       selectedName = bases.data.find(item => item.id === cleanKbId)?.name || cleanKbId
     }
     const data = await requestJson(`/knowledge-bases/${encodeURIComponent(cleanKbId)}/retrieve`, { method: 'POST', body: {
@@ -266,28 +289,34 @@ export async function queryKnowledgeBase({ kbId, kbName, query, topK = 3 }) {
     return { ok: true, chunks }
   } catch (e) {
     logger.warn(`[AstrBot] 检索知识库失败: ${e.message}`)
-    return { ok: false, error: e.message }
+    return failure(e)
   }
 }
 
 /** 获取 AstrBot 全局运行状态与统计 */
-export async function getAstrBotStatus() {
+export async function getAstrBotStatus({ force = false } = {}) {
   const cfg = getAstrBotConfig()
-  let plugins
-  try { plugins = (await requestJson('/plugins', { timeoutMs: 2000 })).data; if (!Array.isArray(plugins)) throw new Error('插件列表格式不正确') }
-  catch (error) {
+  const state = await monitor.probe('plugins', async () => {
+    const plugins = (await requestJson('/plugins', { timeoutMs: 2000 })).data
+    if (!Array.isArray(plugins)) throw new Error('插件列表格式不正确')
+    return plugins
+  }, { identity: identity(), force, ttlMs: 15000 })
+  if (state.status !== 'ready') {
     return {
       alive: false,
       baseUrl: cfg.baseUrl,
       enabled: cfg.enabled,
-      error: error.message,
-      reachable: error.reachable === true,
-      pluginCount: 0,
-      kbCount: 0,
+      error: state.error,
+      code: state.code,
+      reachable: state.reachable === true,
+      capabilities: { plugins: publicCapability(state), knowledge: { status: 'unknown' }, chat: { status: 'unknown' } },
+      pluginCount: null,
+      kbCount: null,
     }
   }
 
-  const kbs = await listKnowledgeBases()
+  const plugins = state.value
+  const kbs = await listKnowledgeBases({ force })
 
   return {
     alive: true,
@@ -304,9 +333,10 @@ export async function getAstrBotStatus() {
       activated: p.activated !== false,
       reserved: Boolean(p.reserved),
     })),
-    kbCount: kbs.data?.length || 0,
+    kbCount: kbs.ok ? kbs.data.length : null,
     knowledgeBases: kbs.data || [],
     knowledgeError: kbs.error,
+    capabilities: { plugins: publicCapability(state), knowledge: kbs.capability, chat: { status: 'unknown' } },
   }
 }
 
@@ -316,5 +346,5 @@ export async function uninstallPlugin({ name, confirmed } = {}) {
     if (typeof name !== 'string' || !name.trim()) throw new Error('插件名称不能为空')
     const data = await requestJson(`/plugins/${encodeURIComponent(name.trim())}`, { method: 'DELETE' })
     return { ok: true, data: data.data }
-  } catch (error) { return { ok: false, error: error.message } }
+  } catch (error) { return failure(error) }
 }

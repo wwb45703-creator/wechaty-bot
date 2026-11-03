@@ -293,7 +293,7 @@ function renderModelList() {
     ? modelRows
         .map(
           (m) =>
-            `<div class="model-item"><div><div class="model-name">${escapeHtml(m.name)}</div><div class="model-size">${formatBytes(m.size)} · ${loadedSet.has(m.name) ? "已加载到内存" : "未加载"}</div></div><div class="model-right"><button class="btn small" data-load="${escapeHtml(m.name)}">${loadedSet.has(m.name) ? "从内存卸载" : "加载到内存"}</button>${m.name === current ? '<span class="badge ok">当前模型</span>' : `<button class="btn small" data-use="${escapeHtml(m.name)}">设为当前</button>`}</div></div>`,
+            `<div class="model-item"><div><div class="model-name">${escapeHtml(m.name)}</div><div class="model-size">${formatBytes(m.size)} · ${m.canChat === false ? '仅用于嵌入 · ' : m.canChat === null ? '能力尚未确认 · ' : ''}${loadedSet.has(m.name) ? "已加载到内存" : "未加载"}</div></div><div class="model-right"><button class="btn small" data-load="${escapeHtml(m.name)}">${loadedSet.has(m.name) ? "从内存卸载" : "加载到内存"}</button>${m.canChat === false || m.canChat === null ? '' : m.name === current ? '<span class="badge ok">当前模型</span>' : `<button class="btn small" data-use="${escapeHtml(m.name)}">设为当前</button>`}</div></div>`,
         )
         .join("")
     : empty(
@@ -412,10 +412,24 @@ async function onSendChat() {
   const thinking = add("ai thinking", "正在生成回复");
   $("btn-chat-send").disabled = true;
   $("btn-chat-clear").disabled = true;
+  $('chat-research').disabled = true;
+  $('chat-scope-select').disabled = true;
+  $('chat-research-status').textContent = '';
   try {
     const v = $("chat-scope-select").value,
       scope = v === "" ? null : chatScopeRows[Number(v)]?.scope;
-    const r = await reviewCall("testChat", scope ? { text, scope } : text);
+    const r = await api('testChat')({ text, ...(scope ? { scope } : {}), research: $('chat-research').checked });
+    if (r.research) {
+      const labels = { skipped: '无需检索', fresh: '已查证', cached: '缓存命中', unavailable: '查证不可用' };
+      const reasons = { 'missing-game-context': '缺少游戏名称', 'ambiguous-game-server': '区服不明确', 'conflicting-sources': '来源冲突', 'no-current-evidence': '缺少近期资料', 'not-corroborated': '缺少相互印证的来源', 'timeout': '联网超时', 'private-or-invalid-query': '已拦截私人信息' };
+      const status = $('chat-research-status');
+      status.textContent = `${labels[r.research.status] || r.research.status}${r.research.reason && reasons[r.research.reason] ? ' · ' + reasons[r.research.reason] : ''}`;
+      for (const source of r.research.sources || []) {
+        const a = document.createElement('a'); a.textContent = ` · ${source.title || new URL(source.url).hostname}${source.publishedAt ? '（' + source.publishedAt.slice(0, 10) + '）' : ''}`;
+        a.href = source.url; a.target = '_blank'; a.rel = 'noreferrer'; status.append(a);
+      }
+    }
+    if (!r?.ok) throw new Error(r?.error || '模型未产生合格回复');
     thinking.remove();
     add("ai", r.reply || "模型返回空回复");
   } catch (e) {
@@ -426,6 +440,8 @@ async function onSendChat() {
     chatBusy = false;
     $("btn-chat-send").disabled = false;
     $("btn-chat-clear").disabled = false;
+    $('chat-research').disabled = false;
+    $('chat-scope-select').disabled = false;
     input.focus();
   }
 }
@@ -442,7 +458,7 @@ async function refreshAstrBotHomeStatus() {
     $("dot-astrbot").className = "dot" + (astrbotAlive ? " ok" : " off");
     $("text-astrbot").textContent = astrbotAlive ? "服务可连接" : "未连接";
     $("astrbot-hint").textContent = astrbotAlive
-      ? `已安装 ${d.pluginCount ?? 0} 个插件`
+      ? `已安装 ${d.pluginCount ?? 0} 个插件${d.knowledgeError ? '；外部知识库：' + d.knowledgeError : ''}`
       : d.error || "请启动服务并在插件中心配置连接与密钥。";
   } catch (e) {
     astrbotAlive = false;
@@ -505,11 +521,11 @@ async function testConnection() {
   await busy(
     $("btn-test-astrbot"),
     async () => {
-      const r = await reviewCall("astrbotGetStatus");
+      const r = await reviewCall("astrbotGetStatus", { force: true });
       if (!r.data?.alive)
         throw new Error(r.data?.error || "服务未连接，请检查服务地址与密钥");
       $("astrbot-connection-result").textContent =
-        "连接成功。" + (r.data.version ? "版本 " + r.data.version : "");
+        r.data.knowledgeError ? '插件服务连接成功；外部知识库：' + r.data.knowledgeError : '插件与知识库权限检查通过。';
       await refreshAstrBotHomeStatus();
     },
     "检测中",

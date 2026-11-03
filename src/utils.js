@@ -202,3 +202,45 @@ export async function sendBubbles(send, texts, delayRange) {
     sentCount++
   }
 }
+
+/**
+ * 彻底清除文本中的 Unicode Emoji 表情符号及修饰符
+ */
+export function stripEmojis(text) {
+  if (!text || typeof text !== 'string') return ''
+  return text
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}]/gu, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+/**
+ * 机器人回复规范化清洗器（硬约束）：
+ * 1. 彻底清除 Emoji 表情符号
+ * 2. 剥除末尾反问句/追问套话（如“你觉得呢？”、“有什么可以帮你的吗？”）
+ * 3. 剥除句末独立附加的疑问句（如“已解决。需要我继续处理吗？” -> “已解决”）
+ * 4. 消除所有问号（包括中文？和英文?），杜绝任何疑问/反问标点
+ * 5. 规范多余空格与重复标点
+ */
+export function formatBotReply(text) {
+  if (!text || typeof text !== 'string') return ''
+  let s = text
+  // 1. 彻底清除所有 Unicode Emoji 表情符号及修饰符
+  s = s.replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}]/gu, '')
+
+  // 2. 清理常见末尾机械式反问/追问套话（如“你觉得呢？”、“有什么可以帮你的吗？”）
+  const withoutRhetoric = s.replace(/(?:[，,。！!\s])*(?:(?:请问)?(?:您|你)?(?:觉得呢|怎么看(?:呢)?|不知道你怎么看|平时也[^？?]+吗|觉得怎么样|说是吧|说对吧|需要我[^？?]+吗|还有(?:其他|什么)问题吗|要不要[^？?]+|看如何|对吧|是吧|不是吗|难道不是吗|懂了吗|需要帮忙吗|有什么可以帮(?:您|你)的吗|有什么能帮(?:您|你)的吗|听明白了吗|好不好|行不行|对不对)[？?~！!\s]*)$/g, '')
+  if (withoutRhetoric.trim()) s = withoutRhetoric
+
+  // 3. 若句子在句号/感叹号/分行后挂着末尾追问句，剥除末尾疑问句
+  const trimmed = s.replace(/(?:[。！!\n]\s*)[^。！!\n]{1,40}[？?]+$/g, '')
+  if (trimmed.trim()) s = trimmed
+
+  // 4. 将任何残留的疑问符号（包括中文？和英文?）彻底去除或转化为平稳陈述标点
+  s = s.replace(/[?？]+(?=\s*(?:\|\|\||$))/g, '')
+  s = s.replace(/[?？]+/g, '，')
+
+  // 5. 规范连续多余标点与空格
+  s = s.replace(/[ \t]{2,}/g, ' ').replace(/[，,]{2,}/g, '，').trim()
+  return s
+}

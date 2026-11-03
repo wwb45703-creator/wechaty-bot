@@ -19,7 +19,7 @@ const oldEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
 process.env.BOT_DATA_ROOT = root
 process.env.BOT_CONFIG_FILE = configFile
 process.env.BOT_TEST_MODE = '1'
-let dialogResult = { canceled: true, filePaths: [] }, spawned = 0, networked = 0
+let dialogResult = { canceled: true, filePaths: [] }, spawned = 0, networked = 0, modelProbes = 0
 const handlers = new Map()
 const frame = { url: pathToFileURL(path.join(project, 'ui', 'renderer', 'index.html')).href }
 const window = { isDestroyed: () => false, webContents: { mainFrame: frame } }
@@ -35,7 +35,14 @@ const context = vm.createContext({
   __dirname: path.join(project, 'ui'),
   process: { env: { ...process.env, BOT_PROJECT_ROOT: project, BOT_UI_SMOKE: '' }, argv: [], resourcesPath: '', kill() { throw new Error('fixture prohibits process access') } },
   console, Buffer, AbortController, setTimeout, clearTimeout, setInterval() {},
-  fetch() { networked++; throw new Error('fixture prohibits network') },
+  async fetch(url, request) {
+    if (String(url) === 'http://127.0.0.1:11434/api/tags') return Response.json({ models: [{ name: 'fixture-chat' }, { name: 'company-vectors:latest' }] })
+    if (String(url) === 'http://127.0.0.1:11434/api/show') {
+      modelProbes++
+      return Response.json({ capabilities: JSON.parse(request.body).model === 'fixture-chat' ? ['completion'] : ['embedding'] })
+    }
+    networked++; throw new Error('fixture prohibits network')
+  },
 })
 async function call(channel, payload) {
   assert.equal(typeof handlers.get(channel), 'function', `Missing IPC: ${channel}`)
@@ -54,6 +61,14 @@ try {
   assert.equal((await call('astrbot:connection:save', { baseUrl: 'https://external.example' })).ok, false)
   assert.equal((await call('astrbot:connection:save', { clearApiKey: true })).data.hasApiKey, false)
   assert.equal(fs.readFileSync(configFile, 'utf8'), sentinel)
+
+  const models = await call('getModels')
+  assert.equal(models.ok, true)
+  assert.equal(models.models.find(model => model.name === 'company-vectors:latest').canChat, false)
+  assert.equal(models.models.find(model => model.name === 'fixture-chat').canChat, true)
+  assert.equal((await call('setCurrentModel', 'company-vectors:latest')).ok, false)
+  assert.equal(modelProbes, 2, 'list and selection share actual capability metadata')
+  assert.equal(fs.readFileSync(configFile, 'utf8'), sentinel, 'embedding rejection must not touch the selected model or role text')
 
   const created = await call('knowledge:create', { name: 'IPC 设备手册' })
   assert.equal(created.ok, true, created.error)

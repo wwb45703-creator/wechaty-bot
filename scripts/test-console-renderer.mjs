@@ -140,12 +140,85 @@ try {
     __qa.assert($('import-log').textContent.includes('隔离验收'),'show actual blocked error');
     __qa.assert($('btn-import').textContent.trim()==='导入模型','restore import button');
   `)
+  await step('embedding-only model cannot become chat model but remains loadable', `
+    const methods=['getModels','getLoadedModels','loadModel','unloadModel','setCurrentModel'];
+    const previous=methods.map(name=>({name,exists:Object.hasOwn(__qa.overrides,name),value:__qa.overrides[name]}));
+    const embedding='qa-embedding-fixture:1', chat='qa-chat-fixture:1', loaded=new Set(), actions=[];
+    try {
+      __qa.overrides.getModels=async()=>({ok:true,models:[
+        {name:embedding,size:536870912,canChat:false},{name:chat,size:1073741824,canChat:true}
+      ]});
+      __qa.overrides.getLoadedModels=async()=>({ok:true,loaded:[...loaded].map(name=>({name}))});
+      __qa.overrides.loadModel=async name=>{actions.push({kind:'load',name});loaded.add(name);return {ok:true}};
+      __qa.overrides.unloadModel=async name=>{actions.push({kind:'unload',name});loaded.delete(name);return {ok:true}};
+      __qa.overrides.setCurrentModel=async name=>{actions.push({kind:'use',name});return {ok:true,restarted:false}};
+      await switchPage('models');
+      const embeddingRow=$('model-list').querySelector('[data-load="'+embedding+'"]').closest('.model-item');
+      __qa.assert(embeddingRow.textContent.includes('仅用于嵌入'),'embedding-only capability must be explained');
+      __qa.assert(!embeddingRow.querySelector('[data-use]'),'embedding model must not offer use-as-chat');
+      __qa.assert($('model-list').querySelector('[data-use="'+chat+'"]'),'completion model still offers chat selection');
+      embeddingRow.querySelector('[data-load]').click();
+      await __qa.wait(()=>loaded.has(embedding) && $('model-list').querySelector('[data-load="'+embedding+'"]').textContent.includes('卸载'));
+      __qa.assert(actions.some(action=>action.kind==='load' && action.name===embedding),'embedding load reaches the requested model');
+      $('model-list').querySelector('[data-load="'+embedding+'"]').click();
+      await __qa.wait(()=>!loaded.has(embedding) && $('model-list').querySelector('[data-load="'+embedding+'"]').textContent.includes('加载到内存'));
+      __qa.assert(actions.some(action=>action.kind==='unload' && action.name===embedding),'embedding unload remains available');
+      __qa.assert(!actions.some(action=>action.kind==='use'),'loading embeddings must never switch chat model');
+      return {embedding,actions};
+    } finally {
+      for(const entry of previous) { if(entry.exists) __qa.overrides[entry.name]=entry.value; else delete __qa.overrides[entry.name]; }
+      await refreshModels();
+    }
+  `)
   await step('chat transport errors restore input and allow retry', `
     await switchPage('chat'); __qa.set('chat-input','隔离诊断消息'); $('chat-form').requestSubmit();
     await __qa.wait(()=>!$('btn-chat-send').disabled);
     __qa.assert($('chat-input').value==='隔离诊断消息','failed message should be preserved');
     __qa.assert(!$('btn-chat-clear').disabled,'clear button should recover');
     __qa.assert($('chat-box').textContent.includes('回复失败'),'failure should be visible');
+  `)
+  await step('chat research is opt-in and displays evidence status, source date and cache', `
+    await switchPage('chat');
+    const toggle=$('chat-research'), existed=Object.hasOwn(__qa.overrides,'testChat'), previous=__qa.overrides.testChat;
+    const original={checked:toggle.checked,input:$('chat-input').value,scope:$('chat-scope-select').value,
+      messages:$('chat-box').innerHTML,status:$('chat-research-status').innerHTML};
+    const requests=[], source={title:'QA 活动公告',url:'https://example.com/qa-activity',publishedAt:'2026-11-01T00:00:00.000Z'};
+    let researched=0;
+    try {
+      __qa.assert(toggle.type==='checkbox' && toggle.checked===false,'network diagnostic must default to unchecked');
+      $('chat-scope-select').value='';
+      __qa.overrides.testChat=async request=>{
+        requests.push(structuredClone(request));
+        if(request.research!==true) return {ok:true,reply:'QA 本地诊断回复'};
+        researched++;
+        return {ok:true,reply:'QA 已核对当前资料',research:{status:researched===1?'fresh':'cached',cacheHit:researched>1,
+          reason:'verified-public-sources',fetchedAt:'2026-11-02T10:00:00.000Z',sources:[source]}};
+      };
+      __qa.set('chat-input','QA 默认本地诊断'); $('chat-form').requestSubmit();
+      await __qa.wait(()=>requests.length===1 && !$('btn-chat-send').disabled);
+      __qa.assert(requests[0].research===false,'unchecked diagnostic must explicitly keep networking off');
+      __qa.assert(!$('chat-research-status').textContent.trim(),'local-only reply must not display stale research metadata');
+      toggle.click();
+      __qa.assert(toggle.checked===true,'clicking the opt-in control enables network diagnosis');
+      __qa.set('chat-input','QA 活动资料诊断'); $('chat-form').requestSubmit();
+      await __qa.wait(()=>requests.length===2 && !$('btn-chat-send').disabled);
+      __qa.assert(requests[1].research===true && requests[1].text==='QA 活动资料诊断','checked control forwards testChat research:true with current text');
+      __qa.assert($('chat-research-status').textContent.includes('已查证'),'fresh evidence status must be visible');
+      const link=$('chat-research-status').querySelector('a');
+      __qa.assert(link && link.href===source.url && link.textContent.includes(source.title),'evidence must identify its actual source');
+      __qa.assert(link.textContent.includes('2026-11-01'),'source publication date must be shown');
+      __qa.assert(!link.textContent.includes('2026-11-02'),'fetch date must not replace source publication date');
+      __qa.set('chat-input','QA 活动资料诊断'); $('chat-form').requestSubmit();
+      await __qa.wait(()=>requests.length===3 && !$('btn-chat-send').disabled);
+      __qa.assert(requests[2].research===true && $('chat-research-status').textContent.includes('缓存命中'),'cached evidence should keep opt-in and show cache status');
+      __qa.assert($('chat-research-status').textContent.includes('2026-11-01'),'cached evidence retains its publication date');
+      __qa.assert(!toggle.disabled && !$('chat-scope-select').disabled,'research controls recover after response');
+      return {researchFlags:requests.map(request=>request.research),sourceUrl:source.url,publishedAt:source.publishedAt};
+    } finally {
+      if(existed) __qa.overrides.testChat=previous; else delete __qa.overrides.testChat;
+      toggle.checked=original.checked; $('chat-input').value=original.input; $('chat-scope-select').value=original.scope;
+      $('chat-box').innerHTML=original.messages; $('chat-research-status').innerHTML=original.status;
+    }
   `)
   await step('plugin offline state, repository validation and failed install retry', `
     await switchPage('plugins'); __qa.assert($('plugins-grid').textContent.includes('插件服务不可用'),'offline state should be explicit');
@@ -168,6 +241,31 @@ try {
     __qa.assert(!$('toast-box').textContent.includes('Cannot set properties of null'),'a closed modal must not mask the transport error');
     await __qa.wait(()=>!$('btn-modal-close').disabled); __qa.click('btn-modal-close');
     __qa.assert($('modal-backdrop').hidden,'failed operation can be dismissed'); delete __qa.overrides.astrbotInstallPlugin;
+  `)
+  await step('online AstrBot plugins retain the external knowledge 403 notice across refreshes', `
+    const existed=Object.hasOwn(__qa.overrides,'astrbotGetStatus'), previous=__qa.overrides.astrbotGetStatus;
+    const permission='AstrBot 权限不足（403）：缺少 kb 权限，请使用已授权的专用 Key';
+    let requests=0;
+    try {
+      await __qa.wait(()=>!astrbotStatusBusy);
+      __qa.overrides.astrbotGetStatus=async()=>{requests++;return {ok:true,data:{alive:true,reachable:true,enabled:true,
+        pluginCount:2,kbCount:0,knowledgeError:permission,capabilities:{
+          plugins:{status:'ready',httpStatus:200},knowledge:{status:'forbidden',httpStatus:403,requiredScope:'kb',retryable:false}
+        }}}};
+      await switchPage('home');
+      for(let index=0;index<3;index++) {
+        await __qa.wait(()=>!astrbotStatusBusy); await refreshAstrBotHomeStatus();
+        __qa.assert(astrbotAlive===true && $('dot-astrbot').classList.contains('ok'),'knowledge 403 must not mark reachable plugin service offline');
+        __qa.assert($('text-astrbot').textContent.includes('服务可连接'),'home page must retain the connected service state');
+        __qa.assert($('astrbot-hint').textContent.includes('2 个插件'),'successful plugin metadata remains visible');
+        __qa.assert($('astrbot-hint').textContent.includes('403') && $('astrbot-hint').textContent.includes('kb 权限'),'missing external knowledge permission remains explicit');
+        __qa.assert($('astrbot-hint').textContent.includes('外部知识库'),'permission notice is scoped to the unavailable capability');
+      }
+      return {statusCalls:requests,plugins:'ready:200',externalKnowledge:'forbidden:403',alive:astrbotAlive};
+    } finally {
+      if(existed) __qa.overrides.astrbotGetStatus=previous; else delete __qa.overrides.astrbotGetStatus;
+      await __qa.wait(()=>!astrbotStatusBusy); await refreshAstrBotHomeStatus();
+    }
   `)
   await step('chat background preserves complete scope identity after reorder and resets after deletion', `
     const scopeA={platform:'wechat',accountId:'qa-account',conversationId:'private:A',personaId:'smoke',subjectId:'user-A'};
