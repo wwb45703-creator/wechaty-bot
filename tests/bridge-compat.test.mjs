@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import dns from 'node:dns'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wechaty-bridge-compat-'))
 process.env.BOT_DATA_ROOT = root
@@ -12,7 +13,9 @@ fs.writeFileSync(process.env.BOT_CONFIG_FILE, JSON.stringify({ ai: {}, astrbot: 
 const config = (await import('../src/config-loader.js')).default
 const bridge = await import('../src/reach/astrbot-client.js')
 const originalFetch = globalThis.fetch
-test.after(() => { globalThis.fetch = originalFetch; fs.rmSync(root, { recursive: true, force: true }) })
+const originalLookup = dns.promises.lookup
+dns.promises.lookup = async host => [{ address: host === 'private.example' ? '10.0.0.1' : '93.184.216.34', family: 4 }]
+test.after(() => { globalThis.fetch = originalFetch; dns.promises.lookup = originalLookup; fs.rmSync(root, { recursive: true, force: true }) })
 
 test('bridge SSE parsing chooses complete reply and retains partial-only fallback', async () => {
   let sent
@@ -43,6 +46,19 @@ test('AnySearch extraction renders JSON as readable content and a complete sourc
   assert.equal((await bridge.chatWithAstrBot({ message: '普通聊天' })).reply, reply)
   globalThis.fetch = async () => new Response('data: {"type":"plain","data":"AnySearch 提取失败：offline"}\n\n')
   assert.equal((await bridge.chatWithAstrBot({ message: `/anysearch extract ${url}` })).reply, 'AnySearch 提取失败：offline')
+})
+
+test('explicit AnySearch extraction blocks private URLs before forwarding to the plugin', async () => {
+  let requests = 0
+  globalThis.fetch = async () => { requests++; throw new Error('Blocked URL must not be forwarded') }
+  for (const message of ['/anysearch extract http://127.0.0.1/admin', '/搜索 提取 https://private.example/',
+    '/websearch http://192.168.1.1/', '/anysearch extract file:///private.txt', '/anysearch extract https://user:secret@example.com/']) {
+    const result = await bridge.chatWithAstrBot({ message })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'BLOCKED_URL')
+    assert.equal(result.retryable, false)
+  }
+  assert.equal(requests, 0)
 })
 
 test('mocked plugin and knowledge APIs keep metadata and bounded query payloads', async () => {

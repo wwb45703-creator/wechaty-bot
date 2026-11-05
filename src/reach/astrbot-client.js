@@ -24,8 +24,13 @@ export function getAstrBotConfig() {
 }
 
 function assertEnabled(cfg) { if (!cfg.enabled) throw Object.assign(new Error('AstrBot 桥接未启用，请在插件中心启用连接'), { code: 'DISABLED', retryable: false }) }
+function pluginExtractUrl(message) {
+  const command = /^\/?(?:anysearch|搜索|websearch)\s+([\s\S]+)$/i.exec(String(message || '').trim())?.[1]
+  if (!command) return null
+  return /^(?:extract|网页|提取|网页提取)\s+([\s\S]+)$/i.exec(command)?.[1] || (/^https?:\/\//i.test(command) ? command : null)
+}
 function presentPluginReply(message, reply) {
-  if (!/^\/?(?:anysearch|搜索|websearch)\s+(?:(?:extract|网页|提取|网页提取)\s+|https?:\/\/)/i.test(message.trim())) return reply
+  if (!pluginExtractUrl(message)) return reply
   try {
     const page = JSON.parse(reply)
     if (typeof page?.url === 'string' && /^https?:\/\//i.test(page.url) && typeof page.content === 'string') {
@@ -132,6 +137,11 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
   if (signal?.aborted) cancel()
 
   try {
+    const extractUrl = pluginExtractUrl(message)
+    if (extractUrl) {
+      const valid = await validateExternalUrl(extractUrl, { signal: controller.signal })
+      if (!valid.ok) return failure(Object.assign(new Error(`SSRF 防护拦截：${valid.error}`), { code: valid.code, retryable: false }))
+    }
     const res = await fetch(`${cfg.baseUrl}/api/v1/chat`, {
       method: 'POST',
       headers: {
