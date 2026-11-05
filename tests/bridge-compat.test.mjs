@@ -24,6 +24,25 @@ test('bridge SSE parsing chooses complete reply and retains partial-only fallbac
   assert.equal(sent.session_id, 'scope-one')
   globalThis.fetch = async () => new Response('data: {"type":"plain","data":"第一段"}\n\ndata: {"type":"plain","data":"第二段"}\n\n')
   assert.equal((await bridge.chatWithAstrBot({ message: '/help' })).reply, '第一段第二段')
+  globalThis.fetch = async () => new Response([
+    'data: {"type":"plain","chain_type":"tool_call","data":"internal tool arguments"}',
+    'data: {"type":"plain","chain_type":"tool_call_result","data":"internal tool result"}',
+    'data: {"type":"plain","chain_type":"reasoning","data":"internal reasoning"}',
+    'data: {"type":"plain","chain_type":null,"data":"可发送的结果"}',
+    '',
+  ].join('\n\n'))
+  assert.equal((await bridge.chatWithAstrBot({ message: '查询' })).reply, '可发送的结果')
+})
+
+test('AnySearch extraction renders JSON as readable content and a complete source URL', async () => {
+  const url = 'https://example.com/?q=%E4%B8%AD&lang=zh#section'
+  const reply = JSON.stringify({ url, title: 'Example Domain', content: 'Public page content' }).replace(/&/g, '\\u0026')
+  globalThis.fetch = async () => new Response(`data: ${JSON.stringify({ type: 'plain', data: reply })}\n\n`)
+  assert.equal((await bridge.chatWithAstrBot({ message: `/anysearch extract ${url}` })).reply,
+    `Example Domain\n\nPublic page content\n\n来源：${url}`)
+  assert.equal((await bridge.chatWithAstrBot({ message: '普通聊天' })).reply, reply)
+  globalThis.fetch = async () => new Response('data: {"type":"plain","data":"AnySearch 提取失败：offline"}\n\n')
+  assert.equal((await bridge.chatWithAstrBot({ message: `/anysearch extract ${url}` })).reply, 'AnySearch 提取失败：offline')
 })
 
 test('mocked plugin and knowledge APIs keep metadata and bounded query payloads', async () => {
@@ -142,4 +161,39 @@ test('auto-bridge replies are clipped to a single sentence', async () => {
   }
   const r = await produceTextResponse(ctx, '今天好累啊')
   assert.equal(r.text, '嗯。')
+})
+
+test('explicit plugin extraction reaches the text handler before ordinary link handling', async () => {
+  const { createOnMessage } = await import('../src/handlers/on-message.js')
+  config.links = { enabled: true }
+  config.private = { enabled: true }
+  const routed = []
+  const dispatch = createOnMessage({ conf: config, admit: async () => ({}),
+    typeMap: { Text: 7, Unknown: 0, Image: 2, Emoticon: 3 },
+    handlers: { private: async () => { routed.push('text') }, link: async () => { routed.push('link') } } })
+  const msg = { id: 'plugin-extract-route', self: () => false, room: () => null, type: () => 7,
+    text: () => '/插件 /anysearch extract https://example.com/search?q=A&lang=zh#section' }
+  await dispatch(msg)
+  await dispatch({ ...msg, id: 'ordinary-link-route', text: () => 'https://example.com/search?q=A&lang=zh#section' })
+  assert.deepEqual(routed, ['text', 'link'])
+})
+
+test('explicit plugin SSE results retain complete source links through the bubble sender', async () => {
+  const { produceTextResponse } = await import('../src/handlers/text-response.js')
+  const { sendBubbles, splitBubbles } = await import('../src/utils.js')
+  config.astrbot.enabled = true
+  const url = 'https://example.com/search?q=%E4%B8%AD&lang=zh#section'
+  let forwarded
+  globalThis.fetch = async (target, options = {}) => {
+    if (new URL(String(target)).pathname === '/api/v1/plugins') return Response.json({ status: 'ok', data: [] })
+    forwarded = JSON.parse(options.body)
+    return new Response(`data: ${JSON.stringify({ type: 'plain', data: `来源：${url}` })}\n\n`)
+  }
+  const packet = await produceTextResponse({ room: null, msg: { id: 'plugin-source-link' },
+    scope: { platform: 'wechat', accountId: 'acc', conversationId: 'private:fixture', personaId: 'default', subjectId: 'fixture' },
+    key: 'plugin-source-link', name: 'fixture' }, `/插件 /anysearch extract ${url}`)
+  assert.equal(forwarded.message, `/anysearch extract ${url}`)
+  const sent = []
+  await sendBubbles(async text => { sent.push(text) }, splitBubbles(packet.text))
+  assert.deepEqual(sent, [`来源：${url}`])
 })

@@ -24,6 +24,16 @@ export function getAstrBotConfig() {
 }
 
 function assertEnabled(cfg) { if (!cfg.enabled) throw Object.assign(new Error('AstrBot 桥接未启用，请在插件中心启用连接'), { code: 'DISABLED', retryable: false }) }
+function presentPluginReply(message, reply) {
+  if (!/^\/?(?:anysearch|搜索|websearch)\s+(?:(?:extract|网页|提取|网页提取)\s+|https?:\/\/)/i.test(message.trim())) return reply
+  try {
+    const page = JSON.parse(reply)
+    if (typeof page?.url === 'string' && /^https?:\/\//i.test(page.url) && typeof page.content === 'string') {
+      return [typeof page.title === 'string' ? page.title : '', page.content, `来源：${page.url}`].filter(Boolean).join('\n\n')
+    }
+  } catch { /* Other plugin reply formats remain plain text. */ }
+  return reply
+}
 function scopeFor(endpoint) { return endpoint.startsWith('/knowledge-bases') ? 'kb' : endpoint.startsWith('/chat') ? 'chat' : 'plugin' }
 function apiError(res, data, endpoint) {
   const requiredScope = scopeFor(endpoint)
@@ -155,7 +165,7 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
         const payload = JSON.parse(raw)
         if (payload.type === 'complete' && typeof payload.data === 'string') {
           completeReply = payload.data
-        } else if (payload.type === 'plain' && typeof payload.data === 'string') {
+        } else if (payload.type === 'plain' && !payload.chain_type && typeof payload.data === 'string') {
           accumulatedPlain += payload.data
         }
       } catch {
@@ -168,7 +178,7 @@ export async function chatWithAstrBot({ message, sessionId = 'default', username
       return { ok: false, error: 'AstrBot 未返回有效文本' }
     }
 
-    return { ok: true, reply: finalReply }
+    return { ok: true, reply: presentPluginReply(message, finalReply) }
   } catch (err) {
     const isAbort = err.name === 'AbortError'
     if (!signal?.aborted) logger.warn(`[AstrBot] 请求异常: ${isAbort ? '响应超时' : '服务不可达'}`)

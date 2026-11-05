@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { formatBotReply, stripEmojis } from '../src/utils.js'
+import { cleanBubbleText, formatBotReply, sendBubbles, splitBubbles, stripAtMentions, stripEmojis } from '../src/utils.js'
 
 test('stripEmojis strips all unicode emojis and emoji modifiers cleanly', () => {
   const samples = [
@@ -56,4 +56,37 @@ test('formatBotReply handles multi-bubble delimiters and edge cases safely', () 
   const multi = formatBotReply('好的收到😄 ||| 正在处理中？')
   assert.equal(multi.includes('😄'), false)
   assert.equal(multi.includes('？'), false)
+})
+
+test('reply cleaning preserves source URL queries, fragments, encoding and balanced brackets', () => {
+  const urls = [
+    'https://example.com/search?q=A&lang=zh#section',
+    'https://example.com/a(b)?list[0]=%E4%B8%AD&next=%2Fdocs#part[2',
+    'https://example.com/article?title=%E5%A4%A9%E6%B0%94&literal=%7C%7C%7C',
+    'http://[2001:db8::1]/docs?q=A#part',
+  ]
+  for (const url of urls) {
+    const output = cleanBubbleText(formatBotReply(`来源：${url}`))
+    assert.equal(output, `来源：${url}`)
+    assert.deepEqual(splitBubbles(output), [output])
+  }
+  assert.equal(cleanBubbleText('(https://example.com/a(b)?q=A)'), 'https://example.com/a(b)?q=A')
+  assert.equal(formatBotReply('资料：https://example.com?q=A。你觉得呢？'), '资料：https://example.com?q=A')
+})
+
+test('URLs survive mention removal and the actual bubble sender with distinct sources retained', async () => {
+  const first = 'https://example.com/@小王/search?q=A&lang=zh#section'
+  const second = 'https://example.com/@小王/search?q=B&lang=zh#section'
+  const reply = formatBotReply(`@小王 资料：${first} ||| 资料：${second}`)
+  const bubbles = splitBubbles(stripAtMentions(reply, ['小王']))
+  assert.deepEqual(bubbles, [`资料：${first}`, `资料：${second}`])
+  const sent = []
+  await sendBubbles(async text => { sent.push(text) }, bubbles)
+  assert.deepEqual(sent, bubbles)
+  assert.deepEqual(splitBubbles(`资料：${first} ||| 资料：${first}`), [`资料：${first}`])
+})
+
+test('URL placeholders cannot collide with literal reply text', () => {
+  const literal = '\uE000URL0\uE001'
+  assert.equal(formatBotReply(`${literal} https://example.com?q=A`), `${literal} https://example.com?q=A`)
 })

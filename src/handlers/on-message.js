@@ -25,7 +25,8 @@ export function createOnMessage({ conf = config, admit = (msg, room) => admitMes
     if (room && (type === types.Text || type === types.Unknown)) recentContext.observe(a.scope, text, { messageId: msg.id, name: a.name, epoch: a.epoch })
     const question = room ? cleanMention(text, a.selfName, a.rc) : text.trim()
     const shortcut = isForgetCommand(question) || question === '我的记忆' ||
-      (conf.dingDong && question.toLowerCase() === 'ding') || (conf.menu?.enabled && question === conf.menu?.keyword)
+      (conf.dingDong && question.toLowerCase() === 'ding') || (conf.menu?.enabled && question === conf.menu?.keyword) ||
+      /^\/?(?:astrbot|插件)(?:\s|$)/i.test(question)
     if (room) {
       a.trigger = await trigger(msg, text, { ...a.rc, directedOnly: conf.replyPolicy?.directedOnly === true || a.rc?.directedOnly === true })
       logger.info(`[群消息诊断] triggered=${a.trigger.triggered} reason=${a.trigger.triggerReason || '-'} textLen=${text.length}`)

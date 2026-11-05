@@ -6,6 +6,28 @@
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// Keep URL punctuation out of the conversational text-cleaning rules.
+function protectUrls(text) {
+  const urls = []
+  let prefix = '\uE000URL'
+  while (text.includes(prefix)) prefix += '_'
+  const masked = text.replace(/https?:\/\/[^\s<>"|，。！？、；：…「」『』【】《》]+/giu, (candidate) => {
+    let url = candidate, suffix = ''
+    while (/[)\]}]$/.test(url)) {
+      const close = url.at(-1), open = { ')': '(', ']': '[', '}': '{' }[close]
+      if (url.split(close).length <= url.split(open).length) break
+      suffix = close + suffix
+      url = url.slice(0, -1)
+    }
+    const token = `${prefix}${urls.length}\uE001`
+    urls.push(url)
+    return token + suffix
+  })
+  return { text: masked, urls, restore(value) {
+    return urls.reduce((result, url, index) => result.split(`${prefix}${index}\uE001`).join(url), value)
+  } }
+}
+
 /**
  * 文本清洗与去乱码、去句末多余括号：
  * 1. 清理控制字符、不可见零宽字符、Unicode 替换字符 (\uFFFD)、孤立代理对（防乱码/问号）；
@@ -31,6 +53,9 @@ export function cleanBubbleText(text) {
   } else {
     s = s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
   }
+
+  const protectedUrls = protectUrls(s)
+  s = protectedUrls.text
 
   // 2. 剥离角色扮演常见的动作/神态/心理活动括号标注（如 “(转头)”、“(翻白眼)”、“（轻咳）”、“(傲娇)”）
   s = s.replace(/[\(（\[【]\s*(?:转头|翻白眼|微笑|叹气|得意|冷笑|小声|傲娇|撇嘴|摊手|歪头|扶额|盯——?|轻笑|脸红|哼一声|思考状|无语|耸肩|抓狂|大哭|狂笑)\s*[\)）\]】]/g, '')
@@ -80,7 +105,7 @@ export function cleanBubbleText(text) {
   }
   s = s.replace(/[。 \t]+$/g, '').trim()
 
-  return s
+  return protectedUrls.restore(s)
 }
 
 /**
@@ -126,7 +151,8 @@ export function textSimilarity(a, b) {
  * 超过 max 条时，多余部分合并为最后一条（换行连接），不丢内容
  */
 export function splitBubbles(text, max = 3) {
-  let raw = String(text || '').trim()
+  const protectedUrls = protectUrls(String(text || '').trim())
+  let raw = protectedUrls.text
 
   // 先处理模型在 ||| 连发标记外裹挟的括号形态，如 "(|||" 或 "|||)"
   raw = raw.replace(/[\(（]\s*\|\|\|\s*[\)）]/g, ' ||| ')
@@ -149,14 +175,15 @@ export function splitBubbles(text, max = 3) {
     : [raw]
 
   const rawLines = rawSegments
-    .map((s) => cleanBubbleText(s))
+    .map((s) => protectedUrls.restore(cleanBubbleText(s)))
     .filter(Boolean)
 
   // 消息内气泡去重：若后一条气泡与已有气泡相似度 >= 0.70，则过滤掉复读气泡
   const lines = []
   for (const item of rawLines) {
     if (lines.length > 0) {
-      const isDuplicate = lines.some((prev) => textSimilarity(prev, item) >= 0.70)
+      const itemUrls = protectedUrls.urls.filter(url => item.includes(url))
+      const isDuplicate = lines.some((prev) => itemUrls.every(url => prev.includes(url)) && textSimilarity(prev, item) >= 0.70)
       if (isDuplicate) continue
     }
     lines.push(item)
@@ -172,13 +199,14 @@ export function splitBubbles(text, max = 3) {
  *  2. 行首 AI 自行模仿的 "@某人" 序列一并剥掉
  */
 export function stripAtMentions(text, names = []) {
-  let t = String(text || '')
+  const protectedUrls = protectUrls(String(text || ''))
+  let t = protectedUrls.text
   for (const n of names) {
     if (n) t = t.split(`@${n}`).join('')
   }
   t = t.replace(/^(?:\s*@\S+\s*)+/gm, (m) => (m.includes('\n') ? '\n' : ''))
   t = t.replace(/@\s*(?=[，。！？、\s]|$)/g, '') // 清理剥离后残留的孤立 @
-  return t.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+  return protectedUrls.restore(t.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim())
 }
 
 /**
@@ -208,10 +236,11 @@ export async function sendBubbles(send, texts, delayRange) {
  */
 export function stripEmojis(text) {
   if (!text || typeof text !== 'string') return ''
-  return text
+  const protectedUrls = protectUrls(text)
+  return protectedUrls.restore(protectedUrls.text
     .replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}]/gu, '')
     .replace(/[ \t]{2,}/g, ' ')
-    .trim()
+    .trim())
 }
 
 /**
@@ -219,12 +248,13 @@ export function stripEmojis(text) {
  * 1. 彻底清除 Emoji 表情符号
  * 2. 剥除末尾反问句/追问套话（如“你觉得呢？”、“有什么可以帮你的吗？”）
  * 3. 剥除句末独立附加的疑问句（如“已解决。需要我继续处理吗？” -> “已解决”）
- * 4. 消除所有问号（包括中文？和英文?），杜绝任何疑问/反问标点
+ * 4. 清理普通文本问号，保留 HTTP(S) URL 中的参数和片段
  * 5. 规范多余空格与重复标点
  */
 export function formatBotReply(text) {
   if (!text || typeof text !== 'string') return ''
-  let s = text
+  const protectedUrls = protectUrls(text)
+  let s = protectedUrls.text
   // 1. 彻底清除所有 Unicode Emoji 表情符号及修饰符
   s = s.replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}]/gu, '')
 
@@ -242,5 +272,5 @@ export function formatBotReply(text) {
 
   // 5. 规范连续多余标点与空格
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/[，,]{2,}/g, '，').trim()
-  return s
+  return protectedUrls.restore(s)
 }
